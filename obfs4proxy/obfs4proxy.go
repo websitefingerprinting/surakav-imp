@@ -32,6 +32,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"github.com/websitefingerprinting/wfdef.git/transports/tamaraw"
 	"io"
 	golog "log"
 	"net"
@@ -273,11 +274,17 @@ func copyLoop(a net.Conn, b net.Conn) error {
 	var wg sync.WaitGroup
 	wg.Add(2)
 
+	b_real, ok := b.(*tamaraw.TamarawConn)
+	if !ok {
+		log.Errorf("Fail to cast to TamarawConn Type.")
+	}
+
 	go func() {
 		defer wg.Done()
 		defer b.Close()
 		defer a.Close()
-		_, err := io.Copy(b, a)
+		//_, err := io.Copy(b, a)
+		_, err := b_real.DownstreamCopyLoop(a)
 		errChan <- err
 	}()
 	go func() {
@@ -311,8 +318,8 @@ func main() {
 	// Handle the command line arguments.
 	_, execName := path.Split(os.Args[0])
 	showVer := flag.Bool("version", false, "Print version and exit")
-	logLevelStr := flag.String("logLevel", "ERROR", "Log level (ERROR/WARN/INFO/DEBUG)")
-	enableLogging := flag.Bool("enableLogging", false, "Log to TOR_PT_STATE_LOCATION/"+obfs4proxyLogFile)
+	logLevelStr := flag.String("logLevel", "DEBUG", "Log level (ERROR/WARN/INFO/DEBUG)")
+	enableLogging := flag.Bool("enableLogging", true, "Log to TOR_PT_STATE_LOCATION/"+obfs4proxyLogFile)
 	unsafeLogging := flag.Bool("unsafeLogging", false, "Disable the address scrubber")
 	flag.Parse()
 
