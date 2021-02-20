@@ -274,7 +274,7 @@ func copyLoop(a net.Conn, b net.Conn) error {
 	var wg sync.WaitGroup
 	wg.Add(2)
 
-	b_real, ok := b.(*tamaraw.TamarawConn)
+	obfsConn, ok := b.(*tamaraw.TamarawConn)
 	if !ok {
 		log.Errorf("Fail to cast to TamarawConn Type.")
 	}
@@ -284,7 +284,7 @@ func copyLoop(a net.Conn, b net.Conn) error {
 		defer b.Close()
 		defer a.Close()
 		//_, err := io.Copy(b, a)
-		_, err := b_real.DownstreamCopyLoop(a)
+		_, err := obfsConn.DownstreamCopy(a)
 		errChan <- err
 	}()
 	go func() {

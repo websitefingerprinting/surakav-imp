@@ -30,7 +30,9 @@ package tamaraw
 import (
 	"encoding/binary"
 	"fmt"
+	"github.com/websitefingerprinting/wfdef.git/common/log"
 	"io"
+	"sync/atomic"
 
 	"github.com/websitefingerprinting/wfdef.git/common/drbg"
 	"github.com/websitefingerprinting/wfdef.git/transports/tamaraw/framing"
@@ -50,6 +52,7 @@ const (
 	packetTypePayload = iota
 	packetTypeDummy
 	packetTypePrngSeed
+	packetTypeSignalStop
 )
 
 // InvalidPacketLengthError is the error returned when decodePacket detects a
@@ -153,6 +156,14 @@ func (conn *TamarawConn) readPackets() (err error) {
 				}
 				conn.lenDist.Reset(seed)
 			}
+		case packetTypeSignalStop:
+			// a signal from client to make server change to stateStop
+			if !conn.isServer {
+				panic(fmt.Sprintf("Client receive SignalStop pkt from server? "))
+			}
+			log.Debugf("[State] stateStart -> stateStop.")
+			atomic.StoreUint32(&conn.state, stateStop)
+		case packetTypeDummy:
 		default:
 			// Ignore unknown packet types.
 		}

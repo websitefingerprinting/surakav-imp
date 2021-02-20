@@ -38,6 +38,7 @@ import (
 	"math/rand"
 	"net"
 	"strconv"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -271,8 +272,8 @@ func (sf *tamarawServerFactory) WrapConn(conn net.Conn) (net.Conn, error) {
 	}
 
 	lenDist := probdist.New(sf.lenSeed, 0, framing.MaximumSegmentLength, false)
-
-	c := &TamarawConn{conn, true, lenDist,  sf.nSeg, sf.rhoClient, sf.rhoServer, bytes.NewBuffer(nil), bytes.NewBuffer(nil), make([]byte, consumeReadSize), nil, nil}
+	// The server's initial state is intentionally set to stateStart at the very beginning to obfuscate the RTT between client and server
+	c := &TamarawConn{conn, true, lenDist,  sf.nSeg, sf.rhoClient, sf.rhoServer, stateStart, bytes.NewBuffer(nil), bytes.NewBuffer(nil), make([]byte, consumeReadSize), nil, nil}
 	log.Debugf("Server pt con status: %v %v %v %v", c.isServer, c.nSeg, c.rhoClient, c.rhoServer)
 	startTime := time.Now()
 
@@ -287,12 +288,14 @@ func (sf *tamarawServerFactory) WrapConn(conn net.Conn) (net.Conn, error) {
 type TamarawConn struct {
 	net.Conn
 
-	isServer bool
+	isServer  bool
 
 	lenDist   *probdist.WeightedDist
 	nSeg      int
 	rhoClient int
 	rhoServer int
+
+	state     uint32
 
 	receiveBuffer        *bytes.Buffer
 	receiveDecodedBuffer *bytes.Buffer
@@ -311,7 +314,7 @@ func newTamarawClientConn(conn net.Conn, args *tamarawClientArgs) (c *TamarawCon
 	lenDist := probdist.New(seed, 0, framing.MaximumSegmentLength, false)
 
 	// Allocate the client structure.
-	c = &TamarawConn{conn, false, lenDist, args.nSeg, args.rhoClient, args.rhoServer, bytes.NewBuffer(nil), bytes.NewBuffer(nil), make([]byte, consumeReadSize), nil, nil}
+	c = &TamarawConn{conn, false, lenDist, args.nSeg, args.rhoClient, args.rhoServer, stateStop, bytes.NewBuffer(nil), bytes.NewBuffer(nil), make([]byte, consumeReadSize), nil, nil}
 	log.Debugf("client pt con status: %v %v %v %v", c.isServer, c.nSeg, c.rhoClient, c.rhoServer)
 	// Start the handshake timeout.
 	deadline := time.Now().Add(clientHandshakeTimeout)
@@ -477,7 +480,7 @@ func (conn *TamarawConn) Read(b []byte) (n int, err error) {
 	return
 }
 
-func (conn *TamarawConn) DownstreamCopyLoop(r io.Reader) (written int64, err error) {
+func (conn *TamarawConn) DownstreamCopy(r io.Reader) (written int64, err error) {
 	errChan := make(chan error, 5)
 	var rho time.Duration
 	if conn.isServer {
@@ -485,6 +488,10 @@ func (conn *TamarawConn) DownstreamCopyLoop(r io.Reader) (written int64, err err
 	} else {
 		rho = time.Duration(conn.rhoClient * 1e6)
 	}
+
+	var curNSeg = 0
+	var tWindow = 1 * time.Second
+	var nRealSeg uint32 = 0 //the number of real packets over the latest windowSize time
 
 	//create a go routine to buffer data from upstream
 	var ReceiveBuf bytes.Buffer
@@ -501,6 +508,11 @@ func (conn *TamarawConn) DownstreamCopyLoop(r io.Reader) (written int64, err err
 				}
 				if n > 0 {
 					ReceiveBuf.Write(buf[:n])
+					// stateStop -> stateStart
+					if atomic.LoadUint32(&conn.state) == stateStop {
+						log.Debugf("[State] stateStop -> stateStart. NRealSeg: %v. NSeg: %v", nRealSeg, curNSeg)
+						atomic.StoreUint32(&conn.state, stateStart)
+					}
 				} else {
 					log.Errorf("BUG? read 0 bytes, err: %v", err)
 					errChan <- io.EOF
@@ -511,19 +523,15 @@ func (conn *TamarawConn) DownstreamCopyLoop(r io.Reader) (written int64, err err
 	}()
 
 	lastSend := time.Now()
+	tElapse := time.Duration(0)  // how much time has passed since last window reset
 	for {
 		select {
 		case conErr := <- errChan:
 			log.Noticef("downstream copy loop terminated at %v. Reason: %v", time.Now().Format("15:04:05.000000"), conErr)
 			return written, conErr
 		default:
-			deltaT := time.Now().Sub(lastSend)
-			if remainingDelay := rho - deltaT; remainingDelay > 0 {
-				// We got data faster than the pacing rate, sleep
-				// for the remaining time.
-				time.Sleep(remainingDelay)
-			}
-
+			sleepRho(lastSend, rho)
+			//log.Debugf("---Curstate:%v, CurNSeg:%v, CurNReal:%v, tElapse:%v at %v", atomic.LoadUint32(&conn.state), curNSeg, nRealSeg, tElapse, time.Now().Format("15:04:05.000000"))
 			var payload [maxPacketPayloadLength]byte
 			var frameBuf bytes.Buffer
 			var packetType int
@@ -538,18 +546,79 @@ func (conn *TamarawConn) DownstreamCopyLoop(r io.Reader) (written int64, err err
 			if readErr != nil && readErr != io.EOF {
 				return written, readErr
 			}
-			err = conn.makePacket(&frameBuf, uint8(packetType), payload[:readLen], uint16(maxPacketPaddingLength-readLen))
-			if err != nil {
-				return 0, err
+			if packetType == packetTypePayload || atomic.LoadUint32(&conn.state) != stateStop {
+				err = conn.makePacket(&frameBuf, uint8(packetType), payload[:readLen], uint16(maxPacketPaddingLength-readLen))
+				if err != nil {
+					return 0, err
+				}
+				_, err = conn.Conn.Write(frameBuf.Bytes())
+				if err != nil {
+					log.Debugf("Can't write to connection. Reason: %v", err)
+					return 0, err
+				}
+				log.Debugf("Send %3d + %3d bytes, frame size %3d at %v", readLen, maxPacketPaddingLength-readLen, frameBuf.Len(), time.Now().Format("15:04:05.000000"))
 			}
-			_, err = conn.Conn.Write(frameBuf.Bytes())
-			if err != nil {
-				log.Debugf("Can't write to connection. Reason: %v", err)
-				return 0, err
-			}
+
 			// update timestamp
 			lastSend = time.Now()
-			log.Debugf("Send %3d + %3d bytes, frame size %3d at %v", readLen, maxPacketPaddingLength-readLen, frameBuf.Len(), time.Now().Format("15:04:05.000000"))
+
+			// The following updates are maintained by client.
+			// 1. client regularly check the throughput over a time period (tWindow), if too few pkts, switch to statePaading
+			// 2. when curNSeg % conn.NSeg == 0, stop padding and signal server.
+			if !conn.isServer{
+				// update curNSeg
+				if atomic.LoadUint32(&conn.state) != stateStop {
+					// only count the total pkts in stateStart/statePadding
+					curNSeg += 1
+					if packetType == packetTypePayload {
+						nRealSeg += 1
+					}
+				}
+				// update tElapse
+				tElapse = tElapse + rho
+				if tElapse >= tWindow {
+					// `tWindow` time has passed, time to check the number of real packets
+					if atomic.LoadUint32(&conn.state) == stateStart && nRealSeg < 2 {
+						//if `tWindow` time has passed, but number of real pkts no more than one,
+						//(relax condition here, since sometimes even you are not loading pages, there is still some cells coming through)
+						// we infer that the loading finishes and we should turn the machine into padding state.
+						// stateStart -> statePadding
+						log.Debugf("[State] stateStart -> statePadding. NRealSeg: %v. NSeg: %v", nRealSeg, curNSeg)
+						atomic.StoreUint32(&conn.state, statePadding)
+					}
+					tElapse = time.Duration(0)
+					nRealSeg = 0
+				}
+
+				if atomic.LoadUint32(&conn.state) == statePadding && curNSeg % conn.nSeg == 0 {
+					// Tamaraw stop condition
+					// statePadding -> stateStop
+					// client is responsible to signal server to stop padding.
+					// server does not stop padding until recieve client's signal
+					log.Debugf("[State] statePadding -> stateStop. NRealSeg: %v. NSeg: %v", nRealSeg, curNSeg)
+					atomic.StoreUint32(&conn.state, stateStop)
+					curNSeg = 0
+					sleepRho(lastSend, rho)
+
+					var frameBuf bytes.Buffer
+					err = conn.makePacket(&frameBuf, uint8(packetTypeSignalStop), []byte{}, uint16(maxPacketPaddingLength))
+					if err != nil {
+						return 0, err
+					}
+					_, err = conn.Conn.Write(frameBuf.Bytes())
+					if err != nil {
+						log.Debugf("Can't write to connection. Reason: %v", err)
+						return 0, err
+					}
+					log.Debugf("Send %3d + %3d bytes, frame size %3d at %v", len([]byte{}), maxPacketPaddingLength, frameBuf.Len(), time.Now().Format("15:04:05.000000"))
+
+					// update timestamp
+					lastSend = time.Now()
+
+					//note here we also need to update tElapse since we sent a packet out
+					tElapse = tElapse + rho
+				}
+			}
 		}
 	}
 }
