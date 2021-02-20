@@ -73,7 +73,7 @@ func (e InvalidPayloadLengthError) Error() string {
 
 var zeroPadBytes [maxPacketPaddingLength]byte
 
-func (conn *TamarawConn) makePacket(w io.Writer, pktType uint8, data []byte, padLen uint16) error {
+func (conn *tamarawConn) makePacket(w io.Writer, pktType uint8, data []byte, padLen uint16) error {
 	var pkt [framing.MaximumFramePayloadLength]byte
 
 	if len(data)+int(padLen) > maxPacketPayloadLength {
@@ -112,7 +112,7 @@ func (conn *TamarawConn) makePacket(w io.Writer, pktType uint8, data []byte, pad
 	return nil
 }
 
-func (conn *TamarawConn) readPackets() (err error) {
+func (conn *tamarawConn) readPackets() (err error) {
 	// Attempt to read off the network.
 	rdLen, rdErr := conn.Conn.Read(conn.readBuffer)
 	conn.receiveBuffer.Write(conn.readBuffer[:rdLen])

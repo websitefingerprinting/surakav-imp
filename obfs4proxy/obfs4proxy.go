@@ -32,7 +32,6 @@ package main
 import (
 	"flag"
 	"fmt"
-	"github.com/websitefingerprinting/wfdef.git/transports/tamaraw"
 	"io"
 	golog "log"
 	"net"
@@ -274,17 +273,11 @@ func copyLoop(a net.Conn, b net.Conn) error {
 	var wg sync.WaitGroup
 	wg.Add(2)
 
-	obfsConn, ok := b.(*tamaraw.TamarawConn)
-	if !ok {
-		log.Errorf("Fail to cast to TamarawConn Type.")
-	}
-
 	go func() {
 		defer wg.Done()
 		defer b.Close()
 		defer a.Close()
-		//_, err := io.Copy(b, a)
-		_, err := obfsConn.DownstreamCopy(a)
+		_, err := io.Copy(b, a)
 		errChan <- err
 	}()
 	go func() {
