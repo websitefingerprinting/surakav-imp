@@ -7,40 +7,53 @@ import (
 	"github.com/golang/protobuf/ptypes/empty"
 	"github.com/websitefingerprinting/wfdef.git/common/log"
 	"github.com/websitefingerprinting/wfdef.git/transports/pb"
+	"google.golang.org/grpc"
 	"os"
 	"sync/atomic"
 	"time"
 )
 
+
+type Callback func(a bool, b string)
+
 type traceLoggingServer struct {
 	pb.UnimplementedTraceLoggingServer
-	conn *tamarawConn
+	callBack Callback
 }
 
-type traceLogger struct {
-	logOn   *atomic.Value
-	logPath *atomic.Value
-}
 
 func (s *traceLoggingServer) SignalLogger(ctx context.Context, signal *pb.SignalMsg) (*empty.Empty, error) {
-	log.Debugf("[Event] Received gRPC service:%v at %v", signal, time.Now().Format("15:04:05.000000"))
 	loggerOn := signal.TurnOn
 	fPath := signal.FilePath
-	s.conn.logger.logOn.Store(loggerOn)
-	s.conn.logger.logPath.Store(fPath)
+	log.Debugf("[Event] Received gRPC service: loggerOn:%v fPath: %v at %v", loggerOn, fPath, time.Now().Format("15:04:05.000000"))
+	s.callBack(loggerOn, fPath)
+	//log.Debugf("set con logger logOn:%v, logPath:%v", s.conn.logger.logOn, s.conn.logger.logPath)
 	return &empty.Empty{}, nil
 }
 
 
-func (s *traceLogger) LogTrace(curtime int64, realbytes int64, dummybytes int64) error {
-	if s.logOn.Load().(bool) {
-		filePath := s.logPath.Load().(string)
+type traceLogger struct {
+	gPRCServer    *grpc.Server
+	logOn         *atomic.Value
+	logPath       *atomic.Value
+}
+
+
+func (logger *traceLogger) UpdateLogInfo(loggerOn bool, fPath string) {
+	logger.logOn.Store(loggerOn)
+	logger.logPath.Store(fPath)
+}
+
+
+func (logger *traceLogger) LogTrace(curtime int64, realbytes int64, dummybytes int64) error {
+	if logger.logOn.Load().(bool) {
+		filePath := logger.logPath.Load().(string)
 		err := WriteTrafficToFile(filePath, curtime, realbytes, dummybytes)
 		if err != nil {
 			// Do not propogate err here to kill the main process
 			log.Errorf("Fail to write to file %v, reason: %v, at %v.",filePath, err, time.Now().Format("15:04:05.000000"))
 		} else {
-			log.Debugf("Write %v %v+%v to file at %v",curtime, realbytes, dummybytes, time.Now().Format("15:04:05.000000"))
+			//log.Debugf("Write %v %v+%v to file at %v",curtime, realbytes, dummybytes, time.Now().Format("15:04:05.000000"))
 		}
 	}
 	return nil
