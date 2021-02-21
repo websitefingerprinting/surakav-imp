@@ -1,0 +1,21 @@
+syntax = "proto3";
+import "google/protobuf/empty.proto";
+package pb;
+
+option go_package = "github.com/websitefingerprinting/wfdef.git/transports/tamaraw/pb";
+
+//message Packet {
+//  int64 timestamp  = 1;
+//  int32 realbytes  = 2;
+//  int32 dummybytes = 3;
+//}
+
+message SignalMsg {
+  bool turnOn = 1;
+  string filePath = 2;
+}
+
+
+service TraceLogging {
+  rpc SignalLogger(SignalMsg) returns (google.protobuf.Empty) {}
+}

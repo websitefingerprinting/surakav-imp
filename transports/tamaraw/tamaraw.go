@@ -33,6 +33,8 @@ import (
 	"bytes"
 	"fmt"
 	"github.com/websitefingerprinting/wfdef.git/common/log"
+	"github.com/websitefingerprinting/wfdef.git/transports/tamaraw/pb"
+	"google.golang.org/grpc"
 	"io"
 	"io/ioutil"
 	"math/rand"
@@ -70,9 +72,12 @@ const (
 	serverHandshakeTimeout = time.Duration(30) * time.Second
 	replayTTL              = time.Duration(3) * time.Hour
 
-	maxIATDelay   = 100
-	maxCloseDelay = 60
-	tWindow       = 500 * time.Millisecond
+	maxIATDelay        = 100
+	maxCloseDelay      = 60
+	tWindow            = 500 * time.Millisecond
+
+	gRPCAddr           = "localhost:9999"
+	traceLogEnabled = true
 )
 
 
@@ -274,7 +279,7 @@ func (sf *tamarawServerFactory) WrapConn(conn net.Conn) (net.Conn, error) {
 
 	lenDist := probdist.New(sf.lenSeed, 0, framing.MaximumSegmentLength, false)
 	// The server's initial state is intentionally set to stateStart at the very beginning to obfuscate the RTT between client and server
-	c := &tamarawConn{conn, true, lenDist,  sf.nSeg, sf.rhoClient, sf.rhoServer, stateStart, bytes.NewBuffer(nil), bytes.NewBuffer(nil), make([]byte, consumeReadSize), nil, nil}
+	c := &tamarawConn{conn, true, lenDist,  sf.nSeg, sf.rhoClient, sf.rhoServer, grpc.NewServer(), nil, stateStart, nil, bytes.NewBuffer(nil), bytes.NewBuffer(nil), make([]byte, consumeReadSize), nil, nil}
 	log.Debugf("Server pt con status: %v %v %v %v", c.isServer, c.nSeg, c.rhoClient, c.rhoServer)
 	startTime := time.Now()
 
@@ -292,12 +297,16 @@ type tamarawConn struct {
 	isServer  bool
 
 	lenDist   *probdist.WeightedDist
-	nSeg      int
-	rhoClient int
-	rhoServer int
+	nSeg       int
+	rhoClient  int
+	rhoServer  int
+
+	gRPCServer *grpc.Server
+	logger     *traceLogger
 
 	state     uint32
 
+	loggerChan           chan []int64
 	receiveBuffer        *bytes.Buffer
 	receiveDecodedBuffer *bytes.Buffer
 	readBuffer           []byte
@@ -313,10 +322,34 @@ func newTamarawClientConn(conn net.Conn, args *tamarawClientArgs) (c *tamarawCon
 		return
 	}
 	lenDist := probdist.New(seed, 0, framing.MaximumSegmentLength, false)
+	var loggerChan chan []int64
+	if traceLogEnabled {
+		loggerChan = make(chan []int64, 2000)
+	} else {
+		loggerChan = nil
+	}
+	log.Debugf("before grpc")
+	server := grpc.NewServer()
+	pb.RegisterTraceLoggingServer(server, &traceLoggingServer{})
+	listen, err := net.Listen("tcp", gRPCAddr)
+	if err != nil {
+		log.Errorf("Fail to launch gRPC service err: %v", err)
+		return nil, err
+	}
+	go func() {
+		log.Debugf("tamaraw - Launch gRPC server")
+		server.Serve(listen)
+	}()
 
+	logPath := atomic.Value{}
+	logPath.Store("")
+	logOn  := atomic.Value{}
+	logOn.Store(false)
+	logger := &traceLogger{logOn: &logOn, logPath: &logPath}
 	// Allocate the client structure.
-	c = &tamarawConn{conn, false, lenDist, args.nSeg, args.rhoClient, args.rhoServer, stateStop, bytes.NewBuffer(nil), bytes.NewBuffer(nil), make([]byte, consumeReadSize), nil, nil}
+	c = &tamarawConn{conn, false, lenDist, args.nSeg, args.rhoClient, args.rhoServer, server, logger, stateStop, loggerChan, bytes.NewBuffer(nil), bytes.NewBuffer(nil), make([]byte, consumeReadSize), nil, nil}
 	log.Debugf("client pt con status: %v %v %v %v", c.isServer, c.nSeg, c.rhoClient, c.rhoServer)
+	log.Debugf("logger:%v %v", c.logger.logOn, c.logger.logPath)
 	// Start the handshake timeout.
 	deadline := time.Now().Add(clientHandshakeTimeout)
 	if err = conn.SetDeadline(deadline); err != nil {
@@ -482,6 +515,7 @@ func (conn *tamarawConn) Read(b []byte) (n int, err error) {
 }
 
 func (conn *tamarawConn) ReadFrom(r io.Reader) (written int64, err error) {
+	defer conn.gRPCServer.Stop()
 	errChan := make(chan error, 5)
 	var rho time.Duration
 	if conn.isServer {
@@ -493,6 +527,27 @@ func (conn *tamarawConn) ReadFrom(r io.Reader) (written int64, err error) {
 	var curNSeg = 0
 	var nRealSeg uint32 = 0 //the number of real packets over the latest windowSize time
 
+	//client side launch trace logger routine
+	if traceLogEnabled && !conn.isServer {
+		log.Debugf("[Event] Client traceLogger turned on.")
+		go func() {
+			for {
+				select {
+				case conErr := <- errChan:
+					log.Errorf("[Routine] traceLogger exits: %v.", conErr)
+					errChan <- conErr
+					return
+				case pktinfo, ok := <- conn.loggerChan:
+					if !ok {
+						log.Debugf("[Event] traceLogger exits.")
+						return
+					}
+					_ = conn.logger.LogTrace(pktinfo[0], pktinfo[1], pktinfo[2])
+				}
+			}
+		}()
+	}
+
 	//create a go routine to buffer data from upstream
 	var ReceiveBuf bytes.Buffer
 	go func() {
@@ -503,7 +558,7 @@ func (conn *tamarawConn) ReadFrom(r io.Reader) (written int64, err error) {
 				n, err := r.Read(buf)
 				if err != nil {
 					errChan <- err
-					log.Debugf("Read from upstream go routine exits.")
+					log.Debugf("[Routine] Read go routine exits: %v", err)
 					return
 				}
 				if n > 0 {
@@ -555,6 +610,10 @@ func (conn *tamarawConn) ReadFrom(r io.Reader) (written int64, err error) {
 				if err != nil {
 					log.Debugf("Can't write to connection. Reason: %v", err)
 					return 0, err
+				}
+				if !conn.isServer && traceLogEnabled &&conn.logger.logOn.Load().(bool) {
+					log.Debugf("Send %3d + %3d bytes, frame size %3d at %v", readLen, maxPacketPaddingLength-readLen, frameBuf.Len(), time.Now().Format("15:04:05.000000"))
+					conn.loggerChan <- []int64{time.Now().UnixNano(), int64(readLen), int64(maxPacketPaddingLength-readLen)}
 				}
 				log.Debugf("Send %3d + %3d bytes, frame size %3d at %v", readLen, maxPacketPaddingLength-readLen, frameBuf.Len(), time.Now().Format("15:04:05.000000"))
 			}
@@ -609,6 +668,10 @@ func (conn *tamarawConn) ReadFrom(r io.Reader) (written int64, err error) {
 					if err != nil {
 						log.Debugf("Can't write to connection. Reason: %v", err)
 						return 0, err
+					}
+					if !conn.isServer && traceLogEnabled && conn.logger.logOn.Load().(bool) {
+						log.Debugf("Send %3d + %3d bytes, frame size %3d at %v", len([]byte{}), maxPacketPaddingLength, frameBuf.Len(), time.Now().Format("15:04:05.000000"))
+						conn.loggerChan <- []int64{time.Now().UnixNano(), 0, int64(maxPacketPaddingLength)}
 					}
 					log.Debugf("Send %3d + %3d bytes, frame size %3d at %v", len([]byte{}), maxPacketPaddingLength, frameBuf.Len(), time.Now().Format("15:04:05.000000"))
 
