@@ -156,6 +156,7 @@ func clientHandler(f base.ClientFactory, conn net.Conn, proxyURI *url.URL) {
 		}
 		dialFn = dialer.Dial
 	}
+
 	remote, err := f.Dial("tcp", socksReq.Target, dialFn, args)
 	if err != nil {
 		log.Errorf("%s(%s) - outgoing connection failed: %s", name, addrStr, log.ElideError(err))

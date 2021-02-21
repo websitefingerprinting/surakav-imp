@@ -6,6 +6,9 @@ require (
 	gitlab.com/yawning/utls.git v0.0.11-1
 	golang.org/x/crypto v0.0.0-20190325154230-a5d413f7728c
 	golang.org/x/net v0.0.0-20190328230028-74de082e2cca
+	github.com/golang/protobuf v1.4.3
+	google.golang.org/grpc v1.33.2
+	google.golang.org/protobuf v1.25.0
 )
 
-go 1.13
+go 1.15

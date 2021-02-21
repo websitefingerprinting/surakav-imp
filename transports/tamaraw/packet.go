@@ -33,6 +33,7 @@ import (
 	"github.com/websitefingerprinting/wfdef.git/common/log"
 	"io"
 	"sync/atomic"
+	"time"
 
 	"github.com/websitefingerprinting/wfdef.git/common/drbg"
 	"github.com/websitefingerprinting/wfdef.git/transports/tamaraw/framing"
@@ -140,6 +141,11 @@ func (conn *tamarawConn) readPackets() (err error) {
 			break
 		}
 		payload := pkt[3 : 3+payloadLen]
+
+		if traceLogEnabled && conn.logger.logOn.Load().(bool) && pktType != packetTypePrngSeed{
+			log.Debugf("Receive %3d + %3d bytes, frame size %3d at %v", payloadLen, int64(decLen - packetOverhead) - int64(payloadLen), decLen + framing.FrameOverhead, time.Now().Format("15:04:05.000000"))
+			conn.loggerChan <- []int64{time.Now().UnixNano(), int64(payloadLen), int64(decLen - packetOverhead) - int64(payloadLen)}
+		}
 
 		switch pktType {
 		case packetTypePayload:
