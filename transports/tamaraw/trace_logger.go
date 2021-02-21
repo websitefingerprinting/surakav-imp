@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"github.com/golang/protobuf/ptypes/empty"
 	"github.com/websitefingerprinting/wfdef.git/common/log"
-	"github.com/websitefingerprinting/wfdef.git/transports/tamaraw/pb"
+	"github.com/websitefingerprinting/wfdef.git/transports/pb"
 	"os"
 	"sync/atomic"
 	"time"

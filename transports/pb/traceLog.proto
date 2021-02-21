@@ -2,7 +2,7 @@ syntax = "proto3";
 import "google/protobuf/empty.proto";
 package pb;
 
-option go_package = "github.com/websitefingerprinting/wfdef.git/transports/tamaraw/pb";
+option go_package = "github.com/websitefingerprinting/wfdef.git/transports/pb";
 
 //message Packet {
 //  int64 timestamp  = 1;

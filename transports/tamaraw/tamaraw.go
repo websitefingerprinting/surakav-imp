@@ -33,7 +33,7 @@ import (
 	"bytes"
 	"fmt"
 	"github.com/websitefingerprinting/wfdef.git/common/log"
-	"github.com/websitefingerprinting/wfdef.git/transports/tamaraw/pb"
+	"github.com/websitefingerprinting/wfdef.git/transports/pb"
 	"google.golang.org/grpc"
 	"io"
 	"io/ioutil"
