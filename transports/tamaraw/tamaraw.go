@@ -72,15 +72,12 @@ const (
 	serverHandshakeTimeout = time.Duration(30) * time.Second
 	replayTTL              = time.Duration(3) * time.Hour
 
-	maxIATDelay        = 100
 	maxCloseDelay      = 60
 	tWindow            = 1000 * time.Millisecond
 
 	gRPCAddr           = "localhost:10086"
 	traceLogEnabled    = true
 )
-
-
 
 type tamarawClientArgs struct {
 	nodeID     *ntor.NodeID
@@ -346,11 +343,11 @@ func newTamarawClientConn(conn net.Conn, args *tamarawClientArgs) (c *tamarawCon
 			return nil, err
 		}
 		go func() {
-			log.Debugf("tamaraw - Launch gRPC server")
+			log.Noticef("[Routine] gRPC server starts listeners.")
 			server.Serve(listen)
+			log.Noticef("[Routine] gRPC server exits.")
 		}()
 	}
-
 
 	// Allocate the client structure.
 	c = &tamarawConn{conn, false, lenDist, args.nSeg, args.rhoClient, args.rhoServer, logger, stateStop, loggerChan, bytes.NewBuffer(nil), bytes.NewBuffer(nil), make([]byte, consumeReadSize), nil, nil}
@@ -538,8 +535,8 @@ func (conn *tamarawConn) ReadFrom(r io.Reader) (written int64, err error) {
 
 	//client side launch trace logger routine
 	if traceLogEnabled && !conn.isServer {
-		log.Debugf("[Event] Client traceLogger turned on.")
 		go func() {
+			log.Noticef("[Routine] Client traceLogger turns on.")
 			for {
 				select {
 				case _, ok := <- closeChan:
@@ -561,6 +558,7 @@ func (conn *tamarawConn) ReadFrom(r io.Reader) (written int64, err error) {
 	//create a go routine to buffer data from upstream
 	var ReceiveBuf bytes.Buffer
 	go func() {
+		log.Noticef("[Routine] Reader routine turns on.")
 		for {
 			select {
 			case _, ok := <- closeChan:
@@ -725,37 +723,6 @@ func (conn *tamarawConn) closeAfterDelay(sf *tamarawServerFactory, startTime tim
 	_, _ = io.Copy(ioutil.Discard, conn.Conn)
 }
 
-func (conn *tamarawConn) padBurst(burst *bytes.Buffer, toPadTo int) (err error) {
-	tailLen := burst.Len() % framing.MaximumSegmentLength
-
-	padLen := 0
-	if toPadTo >= tailLen {
-		padLen = toPadTo - tailLen
-	} else {
-		padLen = (framing.MaximumSegmentLength - tailLen) + toPadTo
-	}
-
-	if padLen > headerLength {
-		err = conn.makePacket(burst, packetTypePayload, []byte{},
-			uint16(padLen-headerLength))
-		if err != nil {
-			return
-		}
-	} else if padLen > 0 {
-		err = conn.makePacket(burst, packetTypePayload, []byte{},
-			maxPacketPayloadLength)
-		if err != nil {
-			return
-		}
-		err = conn.makePacket(burst, packetTypePayload, []byte{},
-			uint16(padLen))
-		if err != nil {
-			return
-		}
-	}
-
-	return
-}
 
 
 var _ base.ClientFactory = (*tamarawClientFactory)(nil)
