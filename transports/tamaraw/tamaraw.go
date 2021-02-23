@@ -277,7 +277,7 @@ func (sf *tamarawServerFactory) WrapConn(conn net.Conn) (net.Conn, error) {
 	lenDist := probdist.New(sf.lenSeed, 0, framing.MaximumSegmentLength, false)
 	logger := &traceLogger{gPRCServer: grpc.NewServer(), logOn: nil, logPath: nil}
 	// The server's initial state is intentionally set to stateStart at the very beginning to obfuscate the RTT between client and server
-	c := &tamarawConn{conn, true, lenDist,  sf.nSeg, sf.rhoClient, sf.rhoServer, logger, stateStart, nil, bytes.NewBuffer(nil), bytes.NewBuffer(nil), make([]byte, consumeReadSize), nil, nil}
+	c := &tamarawConn{conn, true, lenDist,  sf.nSeg, sf.rhoClient, sf.rhoServer, logger, stateStop, nil, bytes.NewBuffer(nil), bytes.NewBuffer(nil), make([]byte, consumeReadSize), nil, nil}
 	log.Debugf("Server pt con status: %v %v %v %v", c.isServer, c.nSeg, c.rhoClient, c.rhoServer)
 	startTime := time.Now()
 
@@ -518,6 +518,7 @@ func (conn *tamarawConn) Read(b []byte) (n int, err error) {
 }
 
 func (conn *tamarawConn) ReadFrom(r io.Reader) (written int64, err error) {
+	log.Debugf("[State] Enter copyloop state: %v (%v is stateStart, %v is statStop)", conn.state, stateStart, stateStop)
 	closeChan := make(chan int)
 	defer close(closeChan)
 	defer conn.logger.gPRCServer.Stop()
@@ -577,7 +578,20 @@ func (conn *tamarawConn) ReadFrom(r io.Reader) (written int64, err error) {
 				if n > 0 {
 					ReceiveBuf.Write(buf[:n])
 					// stateStop -> stateStart
-					if atomic.LoadUint32(&conn.state) == stateStop {
+					if  !conn.isServer && atomic.LoadUint32(&conn.state) == stateStop {
+						var frameBuf bytes.Buffer
+						err = conn.makePacket(&frameBuf, uint8(packetTypeSignalStart), []byte{}, uint16(maxPacketPaddingLength))
+						if err != nil {
+							log.Noticef("[Routine] Read go routine exits: %v", err)
+							errChan <- err
+							return
+						}
+						_, err = conn.Conn.Write(frameBuf.Bytes())
+						if err != nil {
+							log.Noticef("[Routine] Read go routine exits: %v", err)
+							errChan <- err
+							return
+						}
 						log.Debugf("[State] stateStop -> stateStart. NRealSeg: %v. NSeg: %v", nRealSeg, curNSeg)
 						atomic.StoreUint32(&conn.state, stateStart)
 					}
@@ -679,7 +693,7 @@ func (conn *tamarawConn) ReadFrom(r io.Reader) (written int64, err error) {
 					}
 					_, err = conn.Conn.Write(frameBuf.Bytes())
 					if err != nil {
-						log.Debugf("Can't write to connection. Reason: %v", err)
+						log.Errorf("Can't write to connection. Reason: %v", err)
 						return 0, err
 					}
 					if !conn.isServer && traceLogEnabled && conn.logger.logOn.Load().(bool) {

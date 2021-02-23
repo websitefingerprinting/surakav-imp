@@ -53,6 +53,7 @@ const (
 	packetTypePayload = iota
 	packetTypeDummy
 	packetTypePrngSeed
+	packetTypeSignalStart
 	packetTypeSignalStop
 )
 
@@ -162,12 +163,19 @@ func (conn *tamarawConn) readPackets() (err error) {
 				}
 				conn.lenDist.Reset(seed)
 			}
+		case packetTypeSignalStart:
+			// a signal from client to make server change to stateStart
+			if !conn.isServer {
+				panic(fmt.Sprintf("Client receive SignalStart pkt from server? "))
+			}
+			log.Debugf("[State] Client signal: stateStop -> stateStart.")
+			atomic.StoreUint32(&conn.state, stateStart)
 		case packetTypeSignalStop:
 			// a signal from client to make server change to stateStop
 			if !conn.isServer {
 				panic(fmt.Sprintf("Client receive SignalStop pkt from server? "))
 			}
-			log.Debugf("[State] stateStart -> stateStop.")
+			log.Debugf("[State] Client signal: stateStart -> stateStop.")
 			atomic.StoreUint32(&conn.state, stateStop)
 		case packetTypeDummy:
 		default:
