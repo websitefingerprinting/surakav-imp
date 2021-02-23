@@ -42,6 +42,7 @@ type traceLogger struct {
 func (logger *traceLogger) UpdateLogInfo(loggerOn bool, fPath string) {
 	logger.logOn.Store(loggerOn)
 	logger.logPath.Store(fPath)
+	//log.Debugf("logger update at %v", time.Now().UnixNano())
 }
 
 
