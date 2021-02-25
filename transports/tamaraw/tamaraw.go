@@ -521,6 +521,7 @@ func (conn *tamarawConn) ReadFrom(r io.Reader) (written int64, err error) {
 	log.Debugf("[State] Enter copyloop state: %v (%v is stateStart, %v is statStop)", conn.state, stateStart, stateStop)
 	closeChan := make(chan int)
 	defer close(closeChan)
+	defer close(conn.loggerChan)
 	defer conn.logger.gPRCServer.Stop()
 
 	errChan := make(chan error, 5)

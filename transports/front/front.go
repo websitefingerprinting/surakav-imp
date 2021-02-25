@@ -33,6 +33,7 @@ import (
 	"bytes"
 	"fmt"
 	"github.com/websitefingerprinting/wfdef.git/common/log"
+	"github.com/websitefingerprinting/wfdef.git/common/utils"
 	"github.com/websitefingerprinting/wfdef.git/transports/pb"
 	"google.golang.org/grpc"
 	"io"
@@ -85,8 +86,8 @@ type frontClientArgs struct {
 	nodeID     *ntor.NodeID
 	publicKey  *ntor.PublicKey
 	sessionKey *ntor.Keypair
-	wMin       float64     // in seconds
-	wMax       float64     // in seconds
+	wMin       float32     // in seconds
+	wMax       float32     // in seconds
 	nServer    int
 	nClient    int
 }
@@ -116,8 +117,8 @@ func (t *Transport) ServerFactory(stateDir string, args *pt.Args) (base.ServerFa
 	// Store the arguments that should appear in our descriptor for the clients.
 	ptArgs := pt.Args{}
 	ptArgs.Add(certArg, st.cert.String())
-	ptArgs.Add(wMinArg, strconv.FormatFloat(st.wMin, 'f', -1, 32))
-	ptArgs.Add(wMaxArg, strconv.FormatFloat(st.wMax, 'f', -1, 32))
+	ptArgs.Add(wMinArg, strconv.FormatFloat(float64(st.wMin), 'f', -1, 32))
+	ptArgs.Add(wMaxArg, strconv.FormatFloat(float64(st.wMax), 'f', -1, 32))
 	ptArgs.Add(nServerArg, strconv.Itoa(st.nServer))
 	ptArgs.Add(nClientArg, strconv.Itoa(st.nClient))
 
@@ -203,7 +204,7 @@ func (cf *frontClientFactory) ParseArgs(args *pt.Args) (interface{}, error) {
 	if !wMinOk {
 		return nil, fmt.Errorf("missing argument '%s'", wMinArg)
 	}
-	wMin, err := strconv.ParseFloat(wMinStr, 64)
+	wMin, err := strconv.ParseFloat(wMinStr, 32)
 	if err != nil {
 		return nil, fmt.Errorf("malformed w-min '%s'", wMinStr)
 	}
@@ -212,7 +213,7 @@ func (cf *frontClientFactory) ParseArgs(args *pt.Args) (interface{}, error) {
 	if !wMaxOk {
 		return nil, fmt.Errorf("missing argument '%s'", wMaxArg)
 	}
-	wMax, err := strconv.ParseFloat(wMaxStr, 64)
+	wMax, err := strconv.ParseFloat(wMaxStr, 32)
 	if err != nil {
 		return nil, fmt.Errorf("malformed w-max '%s'", wMaxStr)
 	}
@@ -224,7 +225,7 @@ func (cf *frontClientFactory) ParseArgs(args *pt.Args) (interface{}, error) {
 		return nil, err
 	}
 
-	return &frontClientArgs{nodeID, publicKey, sessionKey, wMin, wMax,nServer, nClient}, nil
+	return &frontClientArgs{nodeID, publicKey, sessionKey, float32(wMin), float32(wMax),nServer, nClient}, nil
 }
 
 func (cf *frontClientFactory) Dial(network, addr string, dialFn base.DialFunc, args interface{}) (net.Conn, error) {
@@ -253,8 +254,8 @@ type frontServerFactory struct {
 	identityKey  *ntor.Keypair
 	lenSeed      *drbg.Seed
 
-	wMin       float64     // in seconds
-	wMax       float64     // in seconds
+	wMin       float32     // in seconds
+	wMax       float32     // in seconds
 	nServer    int
 	nClient    int
 	
@@ -284,10 +285,12 @@ func (sf *frontServerFactory) WrapConn(conn net.Conn) (net.Conn, error) {
 		return nil, err
 	}
 
+	paddingChan := make(chan bool)
+
 	lenDist := probdist.New(sf.lenSeed, 0, framing.MaximumSegmentLength, false)
 	logger := &traceLogger{gPRCServer: grpc.NewServer(), logOn: nil, logPath: nil}
 	// The server's initial state is intentionally set to stateStart at the very beginning to obfuscate the RTT between client and server
-	c := &frontConn{conn, true, lenDist,  sf.wMin, sf.wMax, sf.nServer, sf.nClient,logger, stateStop, nil, bytes.NewBuffer(nil), bytes.NewBuffer(nil), make([]byte, consumeReadSize), nil, nil}
+	c := &frontConn{conn, true, lenDist,  sf.wMin, sf.wMax, sf.nServer, sf.nClient,logger, stateStop, paddingChan, nil, bytes.NewBuffer(nil), bytes.NewBuffer(nil), make([]byte, consumeReadSize), nil, nil}
 	log.Debugf("Server pt con status: isServer: %v, w-min: %f, w-max: %f, n-server: %d, n-client: %n", c.isServer, c.wMin, c.wMax, c.nServer, c.nClient)
 	startTime := time.Now()
 
@@ -306,8 +309,8 @@ type frontConn struct {
 	isServer  bool
 
 	lenDist   *probdist.WeightedDist
-	wMin       float64     // in seconds
-	wMax       float64     // in seconds
+	wMin       float32     // in seconds
+	wMax       float32     // in seconds
 	nServer    int
 	nClient    int
 
@@ -315,6 +318,7 @@ type frontConn struct {
 
 	state     uint32
 
+	paddingChan          chan bool   // true when start defense, false when stop defense
 	loggerChan           chan []int64
 	receiveBuffer        *bytes.Buffer
 	receiveDecodedBuffer *bytes.Buffer
@@ -338,6 +342,7 @@ func newTamarawClientConn(conn net.Conn, args *frontClientArgs) (c *frontConn, e
 	} else {
 		loggerChan = nil
 	}
+	paddingChan := make(chan bool)
 
 	logPath := atomic.Value{}
 	logPath.Store("")
@@ -361,7 +366,7 @@ func newTamarawClientConn(conn net.Conn, args *frontClientArgs) (c *frontConn, e
 	}
 
 	// Allocate the client structure.
-	c = &frontConn{conn, false, lenDist, args.wMin, args.wMax, args.nServer, args.nClient, logger, stateStop, loggerChan, bytes.NewBuffer(nil), bytes.NewBuffer(nil), make([]byte, consumeReadSize), nil, nil}
+	c = &frontConn{conn, false, lenDist, args.wMin, args.wMax, args.nServer, args.nClient, logger, stateStop, paddingChan, loggerChan, bytes.NewBuffer(nil), bytes.NewBuffer(nil), make([]byte, consumeReadSize), nil, nil}
 
 	log.Debugf("Client pt con status: isServer: %v, w-min: %f, w-max: %f, n-server: %d, n-client: %n", c.isServer, c.wMin, c.wMax, c.nServer, c.nClient)
 	// Start the handshake timeout.
@@ -531,7 +536,10 @@ func (conn *frontConn) Read(b []byte) (n int, err error) {
 func (conn *frontConn) ReadFrom(r io.Reader) (written int64, err error) {
 	log.Debugf("[State] Enter copyloop state: %v (%v is stateStart, %v is statStop)", conn.state, stateStart, stateStop)
 	closeChan := make(chan int)
+	readChan := make(chan []byte, 65535)
 	defer close(closeChan)
+	defer close(conn.paddingChan)
+	defer close(conn.loggerChan)
 	defer conn.logger.gPRCServer.Stop()
 
 	errChan := make(chan error, 5)
@@ -561,9 +569,30 @@ func (conn *frontConn) ReadFrom(r io.Reader) (written int64, err error) {
 		}()
 	}
 
-	//create a go routine to buffer data from upstream
-	var ReceiveBuf bytes.Buffer
+	//create a go routine to maintain the padding's initialization and tear down
 	go func() {
+		for{
+			select {
+			case _, ok := <- closeChan:
+				if !ok {
+					log.Noticef("[Routine] Padding Factory exits by closeChan signal.")
+					return
+				}
+			case isStart := <- conn.paddingChan:
+				// state must be transfered to start
+				// schedule padding cells
+				if isStart {
+					//init
+				} else {
+					//empty queue
+				}
+			}
+		}
+	}()
+
+	//create a go routine to buffer data from upstream
+	go func() {
+		defer close(readChan)
 		log.Noticef("[Routine] Reader routine turns on.")
 		for {
 			select {
@@ -581,7 +610,7 @@ func (conn *frontConn) ReadFrom(r io.Reader) (written int64, err error) {
 					return
 				}
 				if n > 0 {
-					ReceiveBuf.Write(buf[:n])
+					readChan <- buf[:n]
 					// stateStop -> stateStart
 					if  !conn.isServer && atomic.LoadUint32(&conn.state) == stateStop {
 						var frameBuf bytes.Buffer
@@ -599,6 +628,7 @@ func (conn *frontConn) ReadFrom(r io.Reader) (written int64, err error) {
 						}
 						log.Debugf("[State] stateStop -> stateStart. NRealSeg: %v.", nRealSeg)
 						atomic.StoreUint32(&conn.state, stateStart)
+						conn.paddingChan <- true
 					}
 				} else {
 					log.Errorf("BUG? read 0 bytes, err: %v", err)
@@ -609,30 +639,27 @@ func (conn *frontConn) ReadFrom(r io.Reader) (written int64, err error) {
 		}
 	}()
 
-	lastWindowTime := time.Now()  // how much time has passed since last window reset
+	t := time.NewTimer(time.Second)
+	defer t.Stop()
 	for {
 		select {
 		case conErr := <- errChan:
 			log.Noticef("downstream copy loop terminated at %v. Reason: %v", time.Now().Format("15:04:05.000000"), conErr)
 			return written, conErr
-		default:
-			//log.Debugf("---Curstate:%v, CurNSeg:%v, CurNReal:%v, tElapse:%v at %v", atomic.LoadUint32(&conn.state), curNSeg, nRealSeg, tElapse, time.Now().Format("15:04:05.000000"))
-			var payload [maxPacketPayloadLength]byte
-			var frameBuf bytes.Buffer
-			var packetType int
-			readLen, readErr := ReceiveBuf.Read(payload[:])
-			written += int64(readLen)
-			if readLen == 0 {
-				// ReceiveBuffer is empty
-				packetType = packetTypeDummy
-			} else {
-				packetType = packetTypePayload
+		case readBuf, ok := <- readChan:
+			if !ok {
+				log.Noticef("read channel is closed at %v", time.Now().Format("15:04:05.000000"))
+				return written, err
 			}
-			if readErr != nil && readErr != io.EOF {
-				return written, readErr
-			}
-			if packetType == packetTypePayload || atomic.LoadUint32(&conn.state) != stateStop {
-				err = conn.makePacket(&frameBuf, uint8(packetType), payload[:readLen], uint16(maxPacketPaddingLength-readLen))
+			for i := 0; i < len(readBuf); i += maxPacketPayloadLength{
+				var frameBuf bytes.Buffer
+				startByte := i
+				endByte:= utils.IntMin(startByte + maxPacketPayloadLength, len(readBuf))
+				payloadLen := endByte - startByte
+				if endByte < startByte {
+					panic(fmt.Sprintf("BUG: startByte: %d, endByte: %d", startByte, endByte))
+				}
+				err = conn.makePacket(&frameBuf, packetTypePayload, readBuf[startByte: endByte], uint16(maxPacketPaddingLength - payloadLen))
 				if err != nil {
 					return 0, err
 				}
@@ -643,55 +670,39 @@ func (conn *frontConn) ReadFrom(r io.Reader) (written int64, err error) {
 				}
 				if !conn.isServer && traceLogEnabled && conn.logger.logOn.Load().(bool) {
 					//log.Debugf("Send %3d + %3d bytes, frame size %3d at %v", readLen, maxPacketPaddingLength-readLen, frameBuf.Len(), time.Now().Format("15:04:05.000000"))
-					conn.loggerChan <- []int64{time.Now().UnixNano(), int64(readLen), int64(maxPacketPaddingLength-readLen)}
+					conn.loggerChan <- []int64{time.Now().UnixNano(), int64(payloadLen), int64(maxPacketPaddingLength-payloadLen)}
 				}
-				//log.Debugf("Send %3d + %3d bytes, frame size %3d at %v", readLen, maxPacketPaddingLength-readLen, frameBuf.Len(), time.Now().Format("15:04:05.000000"))
+				if !conn.isServer && atomic.LoadUint32(&conn.state) == stateStart {
+					//client keep tracking the throughput over the last 1 second in the start state.
+					nRealSeg += 1
+				}
 			}
+		case <- t.C:
+			// client regularly check the throughput over a time period (tWindow), if too few pkts, switch to stateStop
+			log.Debugf("[Event] nRealSeg is %v at %v", nRealSeg, time.Now().Format("15:04:05.000000"))
+			if !conn.isServer {
+				if atomic.LoadUint32(&conn.state) == stateStart && nRealSeg < 2 {
+					log.Debugf("[State] stateStart -> stateStop.")
+					atomic.StoreUint32(&conn.state, stateStop)
+					conn.paddingChan <- false
 
-
-			// The following updates are maintained by client.
-			// 1. client regularly check the throughput over a time period (tWindow), if too few pkts, switch to statePaading
-			// 2. when curNSeg % conn.NSeg == 0, stop padding and signal server.
-			if !conn.isServer{
-				// update curNSeg
-				if atomic.LoadUint32(&conn.state) != stateStop {
-					// only count the total pkts in stateStart/statePadding
-					if packetType == packetTypePayload {
-						nRealSeg += 1
+					var frameBuf bytes.Buffer
+					err = conn.makePacket(&frameBuf, uint8(packetTypeSignalStop), []byte{}, uint16(maxPacketPaddingLength))
+					if err != nil {
+						return 0, err
 					}
-				}
-
-				if time.Now().Sub(lastWindowTime) >= tWindow {
-					// `tWindow` time has passed, time to check the number of real packets
-					//log.Debugf("%v passed, NRealSeg: %v, NSeg: %v at %v", tWindow, nRealSeg, curNSeg, time.Now().Format("15:04:05.000000"))
-					if atomic.LoadUint32(&conn.state) == stateStart && nRealSeg < 2 {
-						//if `tWindow` time has passed, but number of real pkts no more than one,
-						//(relax condition here, since sometimes even you are not loading pages, there is still some cells coming through)
-						// we infer that the loading finishes and we should turn the machine into padding state.
-						// stateStart -> statePadding
-						log.Debugf("[State] stateStart -> stateStop. NRealSeg: %v.", nRealSeg)
-						atomic.StoreUint32(&conn.state, stateStop)
-
-						var frameBuf bytes.Buffer
-						err = conn.makePacket(&frameBuf, uint8(packetTypeSignalStop), []byte{}, uint16(maxPacketPaddingLength))
-						if err != nil {
-							return 0, err
-						}
-						_, err = conn.Conn.Write(frameBuf.Bytes())
-						if err != nil {
-							log.Errorf("Can't write to connection. Reason: %v", err)
-							return 0, err
-						}
-						if !conn.isServer && traceLogEnabled && conn.logger.logOn.Load().(bool) {
-							//log.Debugf("Send %3d + %3d bytes, frame size %3d at %v", len([]byte{}), maxPacketPaddingLength, frameBuf.Len(), time.Now().Format("15:04:05.000000"))
-							conn.loggerChan <- []int64{time.Now().UnixNano(), 0, int64(maxPacketPaddingLength)}
-						}
+					_, err = conn.Conn.Write(frameBuf.Bytes())
+					if err != nil {
+						log.Errorf("Can't write to connection. Reason: %v", err)
+						return 0, err
+					}
+					if !conn.isServer && traceLogEnabled && conn.logger.logOn.Load().(bool) {
 						//log.Debugf("Send %3d + %3d bytes, frame size %3d at %v", len([]byte{}), maxPacketPaddingLength, frameBuf.Len(), time.Now().Format("15:04:05.000000"))
+						conn.loggerChan <- []int64{time.Now().UnixNano(), 0, int64(maxPacketPaddingLength)}
 					}
-					lastWindowTime = time.Now()
-					nRealSeg = 0
 				}
 			}
+			nRealSeg = 0
 		}
 	}
 }

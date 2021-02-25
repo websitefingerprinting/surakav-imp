@@ -56,8 +56,8 @@ type jsonServerState struct {
 	PrivateKey string         `json:"private-key"`
 	PublicKey  string         `json:"public-key"`
 	DrbgSeed   string         `json:"drbg-seed"`
-	Wmin       float64        `json:"w-min"`
-	Wmax       float64        `json:"w-max"`
+	Wmin       float32        `json:"w-min"`
+	Wmax       float32        `json:"w-max"`
 	NServer    int            `json:"n-server"`
 	NClient    int            `json:"n-client"`
 }
@@ -104,8 +104,8 @@ type frontServerState struct {
 	nodeID      *ntor.NodeID
 	identityKey *ntor.Keypair
 	drbgSeed    *drbg.Seed
-	wMin        float64
-	wMax        float64
+	wMin        float32
+	wMax        float32
 	nServer     int
 	nClient     int
 	cert        *frontServerCert
@@ -143,21 +143,21 @@ func serverStateFromArgs(stateDir string, args *pt.Args) (*frontServerState, err
 
 	// The front params should be independently configurable.
 	if wMaxOk {
-		wMax, err := strconv.ParseFloat(wMaxStr, 64)
+		wMax, err := strconv.ParseFloat(wMaxStr, 32)
 		if err != nil {
 			return nil, fmt.Errorf("malformed wMax '%s'", wMaxStr)
 		}
-		js.Wmax = wMax
+		js.Wmax = float32(wMax)
 	} else {
 		return nil, fmt.Errorf("missing argument '%s'", wMaxArg)
 	}
 
 	if wMinOk {
-		wMin, err := strconv.ParseFloat(wMinStr, 64)
+		wMin, err := strconv.ParseFloat(wMinStr, 32)
 		if err != nil {
 			return nil, fmt.Errorf("malformed wMin '%s'", wMinStr)
 		}
-		js.Wmin = wMin
+		js.Wmin = float32(wMin)
 	} else {
 		log.Warnf("missing argument '%s', use default value 1.0.", wMinArg)
 		js.Wmin = 1.0
