@@ -168,17 +168,21 @@ func (conn *frontConn) readPackets() (err error) {
 			if !conn.isServer {
 				panic(fmt.Sprintf("Client receive SignalStart pkt from server? "))
 			}
-			log.Debugf("[State] Client signal: stateStop -> stateStart.")
-			conn.paddingChan <- true
-			atomic.StoreUint32(&conn.state, stateStart)
+			if atomic.LoadUint32(&conn.state) != stateStart {
+				log.Debugf("[State] Client signal: stateStop -> stateStart.")
+				conn.paddingChan <- true
+				atomic.StoreUint32(&conn.state, stateStart)
+			}
 		case packetTypeSignalStop:
 			// a signal from client to make server change to stateStop
 			if !conn.isServer {
 				panic(fmt.Sprintf("Client receive SignalStop pkt from server? "))
 			}
-			log.Debugf("[State] Client signal: stateStart -> stateStop.")
-			conn.paddingChan <- false
-			atomic.StoreUint32(&conn.state, stateStop)
+			if atomic.LoadUint32(&conn.state) != stateStop{
+				log.Debugf("[State] Client signal: stateStart -> stateStop.")
+				conn.paddingChan <- false
+				atomic.StoreUint32(&conn.state, stateStop)
+			}
 		case packetTypeDummy:
 		default:
 			// Ignore unknown packet types.

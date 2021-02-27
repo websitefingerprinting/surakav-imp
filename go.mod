@@ -3,7 +3,9 @@ module github.com/websitefingerprinting/wfdef.git
 require (
 	git.torproject.org/pluggable-transports/goptlib.git v1.0.0
 	github.com/dchest/siphash v1.2.1
+	github.com/enriquebris/goconcurrentqueue v0.6.0
 	github.com/golang/protobuf v1.4.3
+	github.com/stretchr/testify v1.7.0 // indirect
 	gitlab.com/yawning/utls.git v0.0.11-1
 	golang.org/x/crypto v0.0.0-20190325154230-a5d413f7728c
 	golang.org/x/exp v0.0.0-20190125153040-c74c464bbbf2
