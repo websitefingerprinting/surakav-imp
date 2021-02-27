@@ -65,7 +65,9 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"github.com/websitefingerprinting/wfdef.git/common/log"
 	"io"
+	"time"
 
 	"github.com/websitefingerprinting/wfdef.git/common/csrand"
 	"github.com/websitefingerprinting/wfdef.git/common/drbg"
@@ -196,8 +198,8 @@ func (encoder *Encoder) Encode(frame, payload []byte) (n int, err error) {
 
 	// Obfuscate the length.
 	length := uint16(len(box) - lengthLength)
-	lengthMask := encoder.drbg.NextBlock()
-	length ^= binary.BigEndian.Uint16(lengthMask)
+	//lengthMask := encoder.drbg.NextBlock()
+	//length ^= binary.BigEndian.Uint16(lengthMask)
 	binary.BigEndian.PutUint16(frame[:2], length)
 
 	// Return the frame.
@@ -260,8 +262,8 @@ func (decoder *Decoder) Decode(data []byte, frames *bytes.Buffer) (int, error) {
 
 		// Deobfuscate the length field.
 		length := binary.BigEndian.Uint16(obfsLen[:])
-		lengthMask := decoder.drbg.NextBlock()
-		length ^= binary.BigEndian.Uint16(lengthMask)
+		//lengthMask := decoder.drbg.NextBlock()
+		//length ^= binary.BigEndian.Uint16(lengthMask)
 		if maxFrameLength < length || minFrameLength > length {
 			// Per "Plaintext Recovery Attacks Against SSH" by
 			// Martin R. Albrecht, Kenneth G. Paterson and Gaven J. Watson,
@@ -275,6 +277,7 @@ func (decoder *Decoder) Decode(data []byte, frames *bytes.Buffer) (int, error) {
 			// paper.
 
 			decoder.nextLengthInvalid = true
+			log.Errorf("Wrong decode pkt length :%v at time %v", length, time.Now().Format("15:04:05.000000"))
 			length = uint16(csrand.IntRange(minFrameLength, maxFrameLength))
 		}
 		decoder.nextLength = length

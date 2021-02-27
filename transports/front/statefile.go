@@ -206,7 +206,6 @@ func serverStateFromJSONServerState(stateDir string, js *jsonServerState) (*fron
 		return nil, fmt.Errorf("invalid w-min '%f' or w-max '%f'", js.Wmin, js.Wmax)
 	}
 
-	// time unit ms
 	st.nServer = js.NServer
 	st.nClient = js.NClient
 	st.wMin    = js.Wmin
