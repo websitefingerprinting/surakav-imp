@@ -112,7 +112,7 @@ type frontServerState struct {
 }
 
 func (st *frontServerState) clientString() string {
-	return fmt.Sprintf("%s=%s %s=%f %s=%f %s=%d %s=%d",
+	return fmt.Sprintf("%s=%s %s=%.1f %s=%.1f %s=%d %s=%d",
 		certArg, st.cert, wMinArg, st.wMin, wMaxArg, st.wMax, nServerArg, st.nServer, nClientArg, st.nClient)
 }
 

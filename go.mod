@@ -3,10 +3,12 @@ module github.com/websitefingerprinting/wfdef.git
 require (
 	git.torproject.org/pluggable-transports/goptlib.git v1.0.0
 	github.com/dchest/siphash v1.2.1
+	github.com/golang/protobuf v1.4.3
 	gitlab.com/yawning/utls.git v0.0.11-1
 	golang.org/x/crypto v0.0.0-20190325154230-a5d413f7728c
+	golang.org/x/exp v0.0.0-20190125153040-c74c464bbbf2
 	golang.org/x/net v0.0.0-20190328230028-74de082e2cca
-	github.com/golang/protobuf v1.4.3
+	gonum.org/v1/gonum v0.8.2
 	google.golang.org/grpc v1.33.2
 	google.golang.org/protobuf v1.25.0
 )
