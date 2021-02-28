@@ -31,6 +31,7 @@ package transports // import "github.com/websitefingerprinting/wfdef.git/transpo
 
 import (
 	"fmt"
+	"github.com/websitefingerprinting/wfdef.git/transports/front"
 	"github.com/websitefingerprinting/wfdef.git/transports/tamaraw"
 	"sync"
 
@@ -92,6 +93,7 @@ func Init() error {
 		new(obfs4.Transport),
 		new(scramblesuit.Transport),
 		new(tamaraw.Transport),
+		new(front.Transport),
 	} {
 		if err := Register(v); err != nil {
 			return err
