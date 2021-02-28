@@ -57,6 +57,14 @@ const (
 	packetTypeSignalStop
 )
 
+var pktTypeMap = map[uint8]string {
+	packetTypePayload:      "Payload",
+	packetTypeDummy:        "Dummy",
+	packetTypePrngSeed:     "PrngSeed",
+	packetTypeSignalStart:  "SigStart",
+	packetTypeSignalStop:   "SigStop",
+}
+
 // InvalidPacketLengthError is the error returned when decodePacket detects a
 // invalid packet length/
 type InvalidPacketLengthError int
@@ -68,6 +76,12 @@ func (e InvalidPacketLengthError) Error() string {
 // InvalidPayloadLengthError is the error returned when decodePacket rejects the
 // payload length.
 type InvalidPayloadLengthError int
+
+type PacketInfo struct {
+	pktType  uint8
+	data     []byte
+	padLen   uint16
+}
 
 func (e InvalidPayloadLengthError) Error() string {
 	return fmt.Sprintf("packet: Invalid payload length: %d", int(e))
@@ -169,7 +183,7 @@ func (conn *frontConn) readPackets() (err error) {
 				panic(fmt.Sprintf("Client receive SignalStart pkt from server? "))
 			}
 			if atomic.LoadUint32(&conn.state) != stateStart {
-				log.Debugf("[State] Client signal: stateStop -> stateStart.")
+				log.Debugf("[State] Client signal: %s -> %s.", stateMap[atomic.LoadUint32(&conn.state)], stateMap[stateStart])
 				conn.paddingChan <- true
 				atomic.StoreUint32(&conn.state, stateStart)
 			}
@@ -179,7 +193,7 @@ func (conn *frontConn) readPackets() (err error) {
 				panic(fmt.Sprintf("Client receive SignalStop pkt from server? "))
 			}
 			if atomic.LoadUint32(&conn.state) != stateStop{
-				log.Debugf("[State] Client signal: stateStart -> stateStop.")
+				log.Debugf("[State] Client signal: %s -> %s.", stateMap[atomic.LoadUint32(&conn.state)], stateMap[stateStop])
 				conn.paddingChan <- false
 				atomic.StoreUint32(&conn.state, stateStop)
 			}

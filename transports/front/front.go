@@ -545,7 +545,7 @@ func (conn *frontConn) initFrontArgs(N int, tsQueue *queue.FixedFIFO) (err error
 		Src: expRand.NewSource(uint64(time.Now().UTC().UnixNano()))}
 	w_tmp := wSampler.Rand()
 	n_tmp := int(n_sampler.Rand())
-	log.Infof("[Init] Sampled w: %.2f, n: %d", w_tmp, n_tmp)
+	log.Debugf("[Init] Sampled w: %.2fs, n: %d", w_tmp, n_tmp)
 	tSampler := distuv.Weibull{K: 2, Lambda: math.Sqrt2 * w_tmp,
 		Src: expRand.NewSource(uint64(time.Now().UTC().UnixNano()))}
 	ts := make([]float64, n_tmp)
@@ -573,7 +573,7 @@ func (conn *frontConn) ReadFrom(r io.Reader) (written int64, err error) {
 	defer conn.logger.gPRCServer.Stop()
 
 	errChan := make(chan error, 5)  // errors from all the go routines will be sent to this channel
-	sendChan := make(chan []byte, 65535) // all packed packets are sent through this channel
+	sendChan := make(chan PacketInfo, 65535) // all packed packets are sent through this channel
 
 	var realNSeg uint32 = 0  // real packet counter over 1 second
 	var receiveBuf bytes.Buffer //read payload from upstream and buffer here
@@ -618,14 +618,26 @@ func (conn *frontConn) ReadFrom(r io.Reader) (written int64, err error) {
 					log.Noticef("[Routine] Send routine exits by closedChan.")
 					return
 				}
-			case frameBytes := <- sendChan:
-				_, wtErr := conn.Conn.Write(frameBytes[:])
+			case packetInfo := <- sendChan:
+				pktType := packetInfo.pktType
+				data    := packetInfo.data
+				padLen  := packetInfo.padLen
+				var frameBuf bytes.Buffer
+				err = conn.makePacket(&frameBuf, pktType, data, padLen)
+				if err != nil {
+					errChan <- err
+					return
+				}
+				_, wtErr := conn.Conn.Write(frameBuf.Bytes())
 				if wtErr != nil {
 					errChan <- wtErr
 					log.Noticef("[Routine] Send routine exits by write err.")
 					return
 				}
-				//log.Debugf("Send out %v bytes at %v", wtLen, time.Now().Format("15:04:05.000000"))
+				if !conn.isServer && traceLogEnabled && conn.logger.logOn.Load().(bool) {
+					conn.loggerChan <- []int64{time.Now().UnixNano(), int64(len(data)), int64(padLen)}
+				}
+				log.Debugf("[Send] %-8s, %-3d+ %-3d bytes at %v", pktTypeMap[pktType], len(data), padLen, time.Now().Format("15:04:05.000"))
 			}
 		}
 	}()
@@ -682,18 +694,7 @@ func (conn *frontConn) ReadFrom(r io.Reader) (written int64, err error) {
 					return
 				}
 				utils.SleepRho(frontInitTime.Load().(time.Time) ,timestamp.(time.Duration))
-				var frameBuf bytes.Buffer
-				err = conn.makePacket(&frameBuf, uint8(packetTypeDummy), []byte{}, maxPacketPaddingLength)
-				if err != nil {
-					errChan <- err
-					return
-				}
-				sendChan <- frameBuf.Bytes()
-				log.Debugf("[Dummy] send %v. Scheduled %v, real %v.",
-					frameBuf.Len(), timestamp.(time.Duration), time.Now().Sub(frontInitTime.Load().(time.Time)))
-				if !conn.isServer && traceLogEnabled && conn.logger.logOn.Load().(bool) {
-					conn.loggerChan <- []int64{time.Now().UnixNano(), 0, maxPacketPaddingLength}
-				}
+				sendChan <- PacketInfo{pktType: packetTypeDummy, data: []byte{},  padLen: maxPacketPaddingLength}
 			}
 		}
 	}()
@@ -711,22 +712,12 @@ func (conn *frontConn) ReadFrom(r io.Reader) (written int64, err error) {
 					return
 				}
 			case <- ticker.C:
-				log.Debugf("NRealSeg %v at %v", realNSeg, time.Now().Format("15:04:05.000000"))
+				//log.Debugf("NRealSeg %v at %v", realNSeg, time.Now().Format("15:04:05.000000"))
 				if !conn.isServer && atomic.LoadUint32(&conn.state) != stateStop && atomic.LoadUint32(&realNSeg) < 2 {
-					log.Debugf("[State] stateStart -> stateStop.")
+					log.Debugf("[State] %s -> %s.", stateMap[atomic.LoadUint32(&conn.state)], stateMap[stateStop])
 					atomic.StoreUint32(&conn.state, stateStop)
-					var frameBuf bytes.Buffer
-					err = conn.makePacket(&frameBuf, uint8(packetTypeSignalStop), []byte{}, maxPacketPaddingLength)
-					if err != nil {
-						errChan <- err
-						return
-					}
-					sendChan <- frameBuf.Bytes()
+					sendChan <- PacketInfo{pktType: packetTypeSignalStop, data: []byte{}, padLen: maxPacketPaddingLength}
 					conn.paddingChan <- false
-					log.Debugf("pack signal stop %v bytes at %v", frameBuf.Len(), time.Now().Format("15:04:05.000000"))
-					if traceLogEnabled && conn.logger.logOn.Load().(bool) {
-						conn.loggerChan <- []int64{time.Now().UnixNano(), 0, maxPacketPaddingLength}
-					}
 				}
 				atomic.StoreUint32(&realNSeg, 0) //reset counter
 			}
@@ -751,39 +742,30 @@ func (conn *frontConn) ReadFrom(r io.Reader) (written int64, err error) {
 				log.Errorf("BUG? read 0 bytes, err: %v", err)
 				return written, io.EOF
 			}
-			//signal server to start
-			if !conn.isServer && atomic.LoadUint32(&conn.state) == stateStop{
-				atomic.StoreUint32(&conn.state, stateStart)
-				var frameBuf bytes.Buffer
-				err = conn.makePacket(&frameBuf, uint8(packetTypeSignalStart), []byte{}, maxPacketPaddingLength)
-				if err != nil {
-					return 0, err
-				}
-				sendChan <- frameBuf.Bytes()
-				conn.paddingChan <- true
-				log.Debugf("pack signal start %v bytes at %v", frameBuf.Len(), time.Now().Format("15:04:05.000000"))
-				if !conn.isServer && traceLogEnabled && conn.logger.logOn.Load().(bool) {
-					conn.loggerChan <- []int64{time.Now().UnixNano(), 0, maxPacketPaddingLength}
+			//signal server to start if there is more than one cell coming
+			// else switch to padding state
+			// stop -> ready -> start
+			if !conn.isServer {
+				if (atomic.LoadUint32(&conn.state) == stateStop && rdLen > maxPacketPayloadLength) ||
+					(atomic.LoadUint32(&conn.state) == stateReady) {
+					log.Debugf("[State] %s -> %s.", stateMap[atomic.LoadUint32(&conn.state)], stateMap[stateStart])
+					atomic.StoreUint32(&conn.state, stateStart)
+					sendChan <- PacketInfo{pktType: packetTypeSignalStart, data: []byte{}, padLen: maxPacketPaddingLength}
+					conn.paddingChan <- true
+				} else if atomic.LoadUint32(&conn.state) == stateStop {
+					log.Debugf("[State] %s -> %s.", stateMap[stateStop], stateMap[stateReady])
+					atomic.StoreUint32(&conn.state, stateReady)
 				}
 			}
 			for receiveBuf.Len() > 0 {
 				var payload [maxPacketPayloadLength]byte
-				var frameBuf bytes.Buffer
 				rdLen, rdErr := receiveBuf.Read(payload[:])
 				written += int64(rdLen)
 				if rdErr != nil {
 					log.Noticef("Exit by read buffer err:%v", rdErr)
 					return written, rdErr
 				}
-				err = conn.makePacket(&frameBuf, uint8(packetTypePayload), payload[:rdLen], uint16(maxPacketPaddingLength-rdLen))
-				if err != nil {
-					return 0, err
-				}
-				sendChan <- frameBuf.Bytes()
-				if !conn.isServer && traceLogEnabled && conn.logger.logOn.Load().(bool) {
-					conn.loggerChan <- []int64{time.Now().UnixNano(), int64(rdLen), int64(maxPacketPaddingLength-rdLen)}
-				}
-				log.Debugf("[Real] Send %v at %v", frameBuf.Len(), time.Now().Format("15:04:05.000000"))
+				sendChan <- PacketInfo{pktType: packetTypePayload, data: payload[:rdLen], padLen: uint16(maxPacketPaddingLength-rdLen)}
 				atomic.AddUint32(&realNSeg, 1)
 			}
 		}
