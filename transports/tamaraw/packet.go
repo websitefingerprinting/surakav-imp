@@ -57,6 +57,20 @@ const (
 	packetTypeSignalStop
 )
 
+var pktTypeMap = map[uint8]string {
+	packetTypePayload:      "Payload",
+	packetTypeDummy:        "Dummy",
+	packetTypePrngSeed:     "PrngSeed",
+	packetTypeSignalStart:  "SigStart",
+	packetTypeSignalStop:   "SigStop",
+}
+
+type PacketInfo struct {
+	pktType  uint8
+	data     []byte
+	padLen   uint16
+}
+
 // InvalidPacketLengthError is the error returned when decodePacket detects a
 // invalid packet length/
 type InvalidPacketLengthError int
@@ -168,14 +182,14 @@ func (conn *tamarawConn) readPackets() (err error) {
 			if !conn.isServer {
 				panic(fmt.Sprintf("Client receive SignalStart pkt from server? "))
 			}
-			log.Debugf("[State] Client signal: stateStop -> stateStart.")
+			log.Debugf("[State] %-12s->%-12s", stateMap[conn.state], stateMap[stateStart])
 			atomic.StoreUint32(&conn.state, stateStart)
 		case packetTypeSignalStop:
 			// a signal from client to make server change to stateStop
 			if !conn.isServer {
 				panic(fmt.Sprintf("Client receive SignalStop pkt from server? "))
 			}
-			log.Debugf("[State] Client signal: stateStart -> stateStop.")
+			log.Debugf("[State] %-12s->%-12s", stateMap[conn.state], stateMap[stateStop])
 			atomic.StoreUint32(&conn.state, stateStop)
 		case packetTypeDummy:
 		default:

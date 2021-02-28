@@ -518,7 +518,7 @@ func (conn *tamarawConn) Read(b []byte) (n int, err error) {
 }
 
 func (conn *tamarawConn) ReadFrom(r io.Reader) (written int64, err error) {
-	log.Debugf("[State] Enter copyloop state: %v (%v is stateStart, %v is statStop)", conn.state, stateStart, stateStop)
+	log.Debugf("[State] Enter copyloop state: %v", stateMap[conn.state])
 	closeChan := make(chan int)
 	defer close(closeChan)
 	defer conn.logger.gPRCServer.Stop()
@@ -531,8 +531,12 @@ func (conn *tamarawConn) ReadFrom(r io.Reader) (written int64, err error) {
 		rho = time.Duration(conn.rhoClient * 1e6)
 	}
 
-	var curNSeg = 0
-	var nRealSeg uint32 = 0 //the number of real packets over the latest windowSize time
+	var curNSeg uint32 = 0
+	var realNSeg uint32 = 0 //the number of real packets over the latest windowSize time
+	sendChan := make(chan PacketInfo, 65535) // all packed packets are sent through this channel
+	var receiveBuf bytes.Buffer
+
+
 
 	//client side launch trace logger routine
 	if traceLogEnabled && !conn.isServer {
@@ -556,155 +560,148 @@ func (conn *tamarawConn) ReadFrom(r io.Reader) (written int64, err error) {
 		}()
 	}
 
-	//create a go routine to buffer data from upstream
-	var ReceiveBuf bytes.Buffer
+
+	//create a go routine to send out packets to the wire
 	go func() {
-		log.Noticef("[Routine] Reader routine turns on.")
+		ticker := time.NewTicker(rho)
+		defer ticker.Stop()
+		var pktType uint8
+		var data []byte
+		var padLen uint16
 		for {
-			select {
+			select{
 			case _, ok := <- closeChan:
-				if !ok {
-					log.Noticef("[Routine] Read go routine exits by closeChan signal.")
+				if !ok{
+					log.Noticef("[Routine] Send routine exits by closedChan.")
 					return
 				}
-			default:
-				buf := make([]byte, 65535)
-				n, err := r.Read(buf)
+			case <- ticker.C:
+				atomic.AddUint32(&curNSeg, 1)
+				var frameBuf bytes.Buffer
+				var curState uint32
+				if len(sendChan) > 0 {
+					// pkts in the queue: possibly signal ones or real ones
+					packetInfo := <- sendChan
+					pktType = packetInfo.pktType
+					data    = packetInfo.data
+					padLen  = packetInfo.padLen
+				} else {
+					pktType = packetTypeDummy
+					data = []byte{}
+					padLen = maxPacketPaddingLength
+				}
+
+				curState = atomic.LoadUint32(&conn.state)
+				if (curState == stateStop || curState == stateReady) && pktType == packetTypeDummy {
+					// stop state should not send dummy packets
+					continue
+				}
+
+				err = conn.makePacket(&frameBuf, pktType, data, padLen)
 				if err != nil {
 					errChan <- err
-					log.Noticef("[Routine] Read go routine exits: %v", err)
 					return
 				}
-				if n > 0 {
-					ReceiveBuf.Write(buf[:n])
-					// stateStop -> stateStart
-					if  !conn.isServer && atomic.LoadUint32(&conn.state) == stateStop {
-						var frameBuf bytes.Buffer
-						err = conn.makePacket(&frameBuf, uint8(packetTypeSignalStart), []byte{}, uint16(maxPacketPaddingLength))
-						if err != nil {
-							log.Noticef("[Routine] Read go routine exits: %v", err)
-							errChan <- err
-							return
-						}
-						_, err = conn.Conn.Write(frameBuf.Bytes())
-						if err != nil {
-							log.Noticef("[Routine] Read go routine exits: %v", err)
-							errChan <- err
-							return
-						}
-						log.Debugf("[State] stateStop -> stateStart. NRealSeg: %v. NSeg: %v", nRealSeg, curNSeg)
-						atomic.StoreUint32(&conn.state, stateStart)
-					}
-				} else {
-					log.Errorf("BUG? read 0 bytes, err: %v", err)
-					errChan <- io.EOF
+				_, wtErr := conn.Conn.Write(frameBuf.Bytes())
+				if wtErr != nil {
+					errChan <- wtErr
+					log.Noticef("[Routine] Send routine exits by write err.")
 					return
+				}
+				if !conn.isServer && traceLogEnabled && conn.logger.logOn.Load().(bool) {
+					conn.loggerChan <- []int64{time.Now().UnixNano(), int64(len(data)), int64(padLen)}
+				}
+				//log.Debugf("[Send] %-8s, %-3d+ %-3d bytes at %v", pktTypeMap[pktType], len(data), padLen, time.Now().Format("15:04:05.000"))
+
+				// update state for client
+				// stateStop -(real pkt)-> stateReady
+				// stateReady -(real pkt)-> stateStart and send a StartSignal to server
+				// statePadding -(curNSeg % NSeg == 0)-> stateStop and send a StopSignal to server
+				if !conn.isServer {
+					curState = atomic.LoadUint32(&conn.state)
+					if curState == stateStop && pktType == packetTypePayload {
+						atomic.StoreUint32(&conn.state, stateReady)
+						log.Debugf("[State] %-12s->%-12s", stateMap[atomic.LoadUint32(&curState)], stateMap[stateReady])
+					} else if curState == stateReady && pktType == packetTypePayload {
+						atomic.StoreUint32(&conn.state, stateStart)
+						log.Debugf("[State] %-12s->%-12s", stateMap[atomic.LoadUint32(&curState)], stateMap[stateStart])
+						sendChan <- PacketInfo{pktType: packetTypeSignalStart, data: []byte{}, padLen: maxPacketPaddingLength}
+					} else  if curState == statePadding {
+						if int(curNSeg) % conn.nSeg == 0 {
+							log.Debugf("[Event] current nseg is %v", curNSeg)
+							atomic.StoreUint32(&conn.state, stateStop)
+							log.Debugf("[State] %-12s->%-12s", stateMap[atomic.LoadUint32(&curState)], stateMap[stateStop])
+							sendChan <- PacketInfo{pktType: packetTypeSignalStop, data: []byte{}, padLen: maxPacketPaddingLength}
+							atomic.StoreUint32(&curNSeg, 0)
+						}
+					}
 				}
 			}
 		}
 	}()
 
-	lastSend := time.Now()
-	lastWindowTime := time.Now()  // how much time has passed since last window reset
+
+	// this go routine regularly check the real throughput
+	// if it is small, change to stop state
+	go func() {
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		for{
+			select{
+			case _, ok := <- closeChan:
+				if !ok {
+					log.Noticef("[Routine] Ticker routine exits by closeChan.")
+					return
+				}
+			case <- ticker.C:
+				curState := atomic.LoadUint32(&conn.state)
+				//log.Debugf("[Event] NRealSeg %v at %v", realNSeg, time.Now().Format("15:04:05.000000"))
+				if !conn.isServer && curState != stateStop && atomic.LoadUint32(&realNSeg) < 2 {
+					// if throughput is small, change client's state:
+					// stateReady -> stateStop
+					// stateStart -> statePadding
+					if curState == stateReady {
+						atomic.StoreUint32(&conn.state, stateStop)
+						log.Debugf("[State] %-12s->%-12s", stateMap[curState], stateMap[stateStop])
+					} else if curState == stateStart {
+						atomic.StoreUint32(&conn.state, statePadding)
+						log.Debugf("[State] %-12s->%-12s", stateMap[curState], stateMap[statePadding])
+					}
+				}
+				atomic.StoreUint32(&realNSeg, 0) //reset counter
+			}
+		}
+	}()
+
 	for {
 		select {
 		case conErr := <- errChan:
 			log.Noticef("downstream copy loop terminated at %v. Reason: %v", time.Now().Format("15:04:05.000000"), conErr)
 			return written, conErr
 		default:
-			sleepRho(lastSend, rho)
-			//log.Debugf("---Curstate:%v, CurNSeg:%v, CurNReal:%v, tElapse:%v at %v", atomic.LoadUint32(&conn.state), curNSeg, nRealSeg, tElapse, time.Now().Format("15:04:05.000000"))
-			var payload [maxPacketPayloadLength]byte
-			var frameBuf bytes.Buffer
-			var packetType int
-			readLen, readErr := ReceiveBuf.Read(payload[:])
-			written += int64(readLen)
-			if readLen == 0 {
-				// ReceiveBuffer is empty
-				packetType = packetTypeDummy
+			buf := make([]byte, 65535)
+			rdLen, err := r.Read(buf[:])
+			if err!= nil {
+				log.Noticef("Exit by read err:%v", err)
+				return written, err
+			}
+			if rdLen > 0 {
+				receiveBuf.Write(buf[: rdLen])
 			} else {
-				packetType = packetTypePayload
-			}
-			if readErr != nil && readErr != io.EOF {
-				return written, readErr
-			}
-			if packetType == packetTypePayload || atomic.LoadUint32(&conn.state) != stateStop {
-				err = conn.makePacket(&frameBuf, uint8(packetType), payload[:readLen], uint16(maxPacketPaddingLength-readLen))
-				if err != nil {
-					return 0, err
-				}
-				_, err = conn.Conn.Write(frameBuf.Bytes())
-				if err != nil {
-					log.Debugf("Can't write to connection. Reason: %v", err)
-					return 0, err
-				}
-				if !conn.isServer && traceLogEnabled && conn.logger.logOn.Load().(bool) {
-					//log.Debugf("Send %3d + %3d bytes, frame size %3d at %v", readLen, maxPacketPaddingLength-readLen, frameBuf.Len(), time.Now().Format("15:04:05.000000"))
-					conn.loggerChan <- []int64{time.Now().UnixNano(), int64(readLen), int64(maxPacketPaddingLength-readLen)}
-				}
-				//log.Debugf("Send %3d + %3d bytes, frame size %3d at %v", readLen, maxPacketPaddingLength-readLen, frameBuf.Len(), time.Now().Format("15:04:05.000000"))
+				log.Errorf("BUG? read 0 bytes, err: %v", err)
+				return written, io.EOF
 			}
 
-			// update timestamp
-			lastSend = time.Now()
-
-			// The following updates are maintained by client.
-			// 1. client regularly check the throughput over a time period (tWindow), if too few pkts, switch to statePaading
-			// 2. when curNSeg % conn.NSeg == 0, stop padding and signal server.
-			if !conn.isServer{
-				// update curNSeg
-				if atomic.LoadUint32(&conn.state) != stateStop {
-					// only count the total pkts in stateStart/statePadding
-					curNSeg += 1
-					if packetType == packetTypePayload {
-						nRealSeg += 1
-					}
+			for receiveBuf.Len() > 0 {
+				var payload [maxPacketPayloadLength]byte
+				rdLen, rdErr := receiveBuf.Read(payload[:])
+				written += int64(rdLen)
+				if rdErr != nil {
+					log.Noticef("Exit by read buffer err:%v", rdErr)
+					return written, rdErr
 				}
-
-				if time.Now().Sub(lastWindowTime) >= tWindow {
-					// `tWindow` time has passed, time to check the number of real packets
-					//log.Debugf("%v passed, NRealSeg: %v, NSeg: %v at %v", tWindow, nRealSeg, curNSeg, time.Now().Format("15:04:05.000000"))
-					if atomic.LoadUint32(&conn.state) == stateStart && nRealSeg < 2 {
-						//if `tWindow` time has passed, but number of real pkts no more than one,
-						//(relax condition here, since sometimes even you are not loading pages, there is still some cells coming through)
-						// we infer that the loading finishes and we should turn the machine into padding state.
-						// stateStart -> statePadding
-						log.Debugf("[State] stateStart -> statePadding. NRealSeg: %v. NSeg: %v", nRealSeg, curNSeg)
-						atomic.StoreUint32(&conn.state, statePadding)
-					}
-					lastWindowTime = time.Now()
-					nRealSeg = 0
-				}
-
-				if atomic.LoadUint32(&conn.state) == statePadding && curNSeg % conn.nSeg == 0 {
-					// Tamaraw stop condition
-					// statePadding -> stateStop
-					// client is responsible to signal server to stop padding.
-					// server does not stop padding until recieve client's signal
-					log.Debugf("[State] statePadding -> stateStop. NRealSeg: %v. NSeg: %v", nRealSeg, curNSeg)
-					atomic.StoreUint32(&conn.state, stateStop)
-					curNSeg = 0
-					sleepRho(lastSend, rho)
-
-					var frameBuf bytes.Buffer
-					err = conn.makePacket(&frameBuf, uint8(packetTypeSignalStop), []byte{}, uint16(maxPacketPaddingLength))
-					if err != nil {
-						return 0, err
-					}
-					_, err = conn.Conn.Write(frameBuf.Bytes())
-					if err != nil {
-						log.Errorf("Can't write to connection. Reason: %v", err)
-						return 0, err
-					}
-					if !conn.isServer && traceLogEnabled && conn.logger.logOn.Load().(bool) {
-						//log.Debugf("Send %3d + %3d bytes, frame size %3d at %v", len([]byte{}), maxPacketPaddingLength, frameBuf.Len(), time.Now().Format("15:04:05.000000"))
-						conn.loggerChan <- []int64{time.Now().UnixNano(), 0, int64(maxPacketPaddingLength)}
-					}
-					//log.Debugf("Send %3d + %3d bytes, frame size %3d at %v", len([]byte{}), maxPacketPaddingLength, frameBuf.Len(), time.Now().Format("15:04:05.000000"))
-
-					// update timestamp
-					lastSend = time.Now()
-				}
+				sendChan <- PacketInfo{pktType: packetTypePayload, data: payload[:rdLen], padLen: uint16(maxPacketPaddingLength-rdLen)}
+				atomic.AddUint32(&realNSeg, 1)
 			}
 		}
 	}
