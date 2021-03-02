@@ -3,13 +3,15 @@ package randomwt
 const (
 	stateStart = iota
 	stateStop
-	stateReady
+	stateStartReady
+	stateStopReady
 )
 
 var stateMap = map[uint32]string {
 	stateStart: "stateStart",
 	stateStop: "stateStop",
-	stateReady: "stateReady",
+	stateStartReady : "startReady",
+	stateStopReady : "stopReady",
 }
 
 const (
