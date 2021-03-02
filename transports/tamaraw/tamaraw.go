@@ -261,7 +261,7 @@ func (sf *tamarawServerFactory) Args() *pt.Args {
 }
 
 func (sf *tamarawServerFactory) WrapConn(conn net.Conn) (net.Conn, error) {
-	// Not much point in having a separate newObfs4ServerConn routine when
+	// Not much point in having a separate newTamarawServerConn routine when
 	// wrapping requires using values from the factory instance.
 
 	// Generate the session keypair *before* consuming data from the peer, to

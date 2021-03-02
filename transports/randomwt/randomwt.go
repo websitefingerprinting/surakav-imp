@@ -25,26 +25,21 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
-// package front provides an implementation of the Tor Project's front
+// package randomwt provides an implementation of the Tor Project's randomwt
 // obfuscation protocol.
-package front // import "github.com/websitefingerprinting/wfdef.git/transports/front"
+package randomwt // import "github.com/websitefingerprinting/wfdef.git/transports/randomwt"
 
 import (
 	"bytes"
 	"fmt"
-	queue "github.com/enriquebris/goconcurrentqueue"
 	"github.com/websitefingerprinting/wfdef.git/common/log"
 	"github.com/websitefingerprinting/wfdef.git/common/utils"
 	"github.com/websitefingerprinting/wfdef.git/transports/pb"
-	expRand "golang.org/x/exp/rand"
-	"gonum.org/v1/gonum/stat/distuv"
 	"google.golang.org/grpc"
 	"io"
 	"io/ioutil"
-	"math"
 	"math/rand"
 	"net"
-	"sort"
 	"strconv"
 	"sync/atomic"
 	"syscall"
@@ -56,62 +51,63 @@ import (
 	"github.com/websitefingerprinting/wfdef.git/common/probdist"
 	"github.com/websitefingerprinting/wfdef.git/common/replayfilter"
 	"github.com/websitefingerprinting/wfdef.git/transports/base"
-	"github.com/websitefingerprinting/wfdef.git/transports/front/framing"
+	"github.com/websitefingerprinting/wfdef.git/transports/randomwt/framing"
 )
 
 const (
-	transportName = "front"
+	transportName    = "randomwt"
 
-	nodeIDArg     = "node-id"
-	publicKeyArg  = "public-key"
-	privateKeyArg = "private-key"
-	seedArg       = "drbg-seed"
-	certArg       = "cert"
-	wMinArg       = "w-min"
-	wMaxArg       = "w-max"
-	nServerArg    = "n-server"
-	nClientArg    = "n-client"
+	nodeIDArg        = "node-id"
+	publicKeyArg     = "public-key"
+	privateKeyArg    = "private-key"
+	seedArg          = "drbg-seed"
+	certArg          = "cert"
+	nClientRealArg   = "n-client-real"
+	nServerRealArg   = "n-server-real"
+	nClientFakeArg   = "n-client-fake"
+	nServerFakeArg   = "n-server-fake"
+	pFakeArg         = "p-fake"
 
 
 
 	seedLength             = drbg.SeedLength
-	headerLength           = framing.FrameOverhead + packetOverhead
 	clientHandshakeTimeout = time.Duration(60) * time.Second
 	serverHandshakeTimeout = time.Duration(30) * time.Second
 	replayTTL              = time.Duration(3) * time.Hour
 
 	maxCloseDelay      = 60
-	tWindow            = 1000 * time.Millisecond
+	maxWaitingTime     = 250 * time.Millisecond
 
 	gRPCAddr           = "localhost:10086"
 	traceLogEnabled    = true
 )
 
-type frontClientArgs struct {
-	nodeID     *ntor.NodeID
-	publicKey  *ntor.PublicKey
-	sessionKey *ntor.Keypair
-	wMin       float32     // in seconds
-	wMax       float32     // in seconds
-	nServer    int
-	nClient    int
+type randomwtClientArgs struct {
+	nodeID      *ntor.NodeID
+	publicKey   *ntor.PublicKey
+	sessionKey  *ntor.Keypair
+	nClientReal int
+	nServerReal int
+	nClientFake int
+	nServerFake int
+	pFake       float64
 }
 
-// Transport is the front implementation of the base.Transport interface.
+// Transport is the randomwt implementation of the base.Transport interface.
 type Transport struct{}
 
-// Name returns the name of the front transport protocol.
+// Name returns the name of the randomwt transport protocol.
 func (t *Transport) Name() string {
 	return transportName
 }
 
-// ClientFactory returns a new frontClientFactory instance.
+// ClientFactory returns a new randomwtClientFactory instance.
 func (t *Transport) ClientFactory(stateDir string) (base.ClientFactory, error) {
-	cf := &frontClientFactory{transport: t}
+	cf := &randomwtClientFactory{transport: t}
 	return cf, nil
 }
 
-// ServerFactory returns a new frontServerFactory instance.
+// ServerFactory returns a new randomwtServerFactory instance.
 func (t *Transport) ServerFactory(stateDir string, args *pt.Args) (base.ServerFactory, error) {
 	st, err := serverStateFromArgs(stateDir, args)
 	if err != nil {
@@ -122,10 +118,11 @@ func (t *Transport) ServerFactory(stateDir string, args *pt.Args) (base.ServerFa
 	// Store the arguments that should appear in our descriptor for the clients.
 	ptArgs := pt.Args{}
 	ptArgs.Add(certArg, st.cert.String())
-	ptArgs.Add(wMinArg, strconv.FormatFloat(float64(st.wMin), 'f', -1, 32))
-	ptArgs.Add(wMaxArg, strconv.FormatFloat(float64(st.wMax), 'f', -1, 32))
-	ptArgs.Add(nServerArg, strconv.Itoa(st.nServer))
-	ptArgs.Add(nClientArg, strconv.Itoa(st.nClient))
+	ptArgs.Add(nClientRealArg, strconv.Itoa(st.nClientReal))
+	ptArgs.Add(nServerRealArg, strconv.Itoa(st.nServerReal))
+	ptArgs.Add(nClientFakeArg, strconv.Itoa(st.nClientFake))
+	ptArgs.Add(nServerFakeArg, strconv.Itoa(st.nServerFake))
+	ptArgs.Add(pFakeArg, strconv.FormatFloat(st.pFake, 'f', -1, 64))
 
 
 	// Initialize the replay filter.
@@ -141,19 +138,20 @@ func (t *Transport) ServerFactory(stateDir string, args *pt.Args) (base.ServerFa
 	}
 	rng := rand.New(drbg)
 
-	sf := &frontServerFactory{t, &ptArgs, st.nodeID, st.identityKey, st.drbgSeed, st.wMin, st.wMax, st.nServer, st.nClient, filter, rng.Intn(maxCloseDelay)}
+	sf := &randomwtServerFactory{t, &ptArgs, st.nodeID, st.identityKey, st.drbgSeed, st.nClientReal, st.nServerReal, st.nClientFake, st.nServerFake, st.pFake, filter, rng.Intn(maxCloseDelay)}
 	return sf, nil
 }
 
-type frontClientFactory struct {
+type randomwtClientFactory struct {
 	transport base.Transport
 }
 
-func (cf *frontClientFactory) Transport() base.Transport {
+func (cf *randomwtClientFactory) Transport() base.Transport {
 	return cf.transport
 }
 
-func (cf *frontClientFactory) ParseArgs(args *pt.Args) (interface{}, error) {
+
+func (cf *randomwtClientFactory) ParseArgs(args *pt.Args) (interface{}, error) {
 	var nodeID *ntor.NodeID
 	var publicKey *ntor.PublicKey
 
@@ -188,40 +186,27 @@ func (cf *frontClientFactory) ParseArgs(args *pt.Args) (interface{}, error) {
 	}
 
 
-	nClientStr, nClientOk := args.Get(nClientArg)
-	if !nClientOk {
-		return nil, fmt.Errorf("missing argument '%s'", nClientArg)
-	}
-	nClient, err := strconv.Atoi(nClientStr)
+	nClientReal, err := utils.ParseArgByKey(args, nClientRealArg, "int")
 	if err != nil {
-		return nil, fmt.Errorf("malformed n-client '%s'", nClientStr)
+		return nil ,err
 	}
-	nServerStr, nServerOk := args.Get(nServerArg)
-	if !nServerOk {
-		return nil, fmt.Errorf("missing argument '%s'", nServerArg)
-	}
-	nServer, err := strconv.Atoi(nServerStr)
+	nServerReal, err := utils.ParseArgByKey(args, nServerRealArg, "int")
 	if err != nil {
-		return nil, fmt.Errorf("malformed n-server '%s'", nServerStr)
+		return nil, err
+	}
+	nClientFake, err := utils.ParseArgByKey(args, nClientFakeArg, "int")
+	if err != nil {
+		return nil, err
+	}
+	nServerFake, err := utils.ParseArgByKey(args, nServerFakeArg, "int")
+	if err != nil {
+		return nil, err
+	}
+	pFake, err := utils.ParseArgByKey(args, pFakeArg, "float64")
+	if err != nil {
+		return nil, err
 	}
 
-	wMinStr, wMinOk := args.Get(wMinArg)
-	if !wMinOk {
-		return nil, fmt.Errorf("missing argument '%s'", wMinArg)
-	}
-	wMin, err := strconv.ParseFloat(wMinStr, 32)
-	if err != nil {
-		return nil, fmt.Errorf("malformed w-min '%s'", wMinStr)
-	}
-
-	wMaxStr, wMaxOk := args.Get(wMaxArg)
-	if !wMaxOk {
-		return nil, fmt.Errorf("missing argument '%s'", wMaxArg)
-	}
-	wMax, err := strconv.ParseFloat(wMaxStr, 32)
-	if err != nil {
-		return nil, fmt.Errorf("malformed w-max '%s'", wMaxStr)
-	}
 
 	// Generate the session key pair before connectiong to hide the Elligator2
 	// rejection sampling from network observers.
@@ -230,12 +215,13 @@ func (cf *frontClientFactory) ParseArgs(args *pt.Args) (interface{}, error) {
 		return nil, err
 	}
 
-	return &frontClientArgs{nodeID, publicKey, sessionKey, float32(wMin), float32(wMax),nServer, nClient}, nil
+	return &randomwtClientArgs{nodeID, publicKey, sessionKey,
+		nClientReal.(int), nServerReal.(int), nClientFake.(int), nServerFake.(int), pFake.(float64)}, nil
 }
 
-func (cf *frontClientFactory) Dial(network, addr string, dialFn base.DialFunc, args interface{}) (net.Conn, error) {
+func (cf *randomwtClientFactory) Dial(network, addr string, dialFn base.DialFunc, args interface{}) (net.Conn, error) {
 	// Validate args before bothering to open connection.
-	ca, ok := args.(*frontClientArgs)
+	ca, ok := args.(*randomwtClientArgs)
 	if !ok {
 		return nil, fmt.Errorf("invalid argument type for args")
 	}
@@ -244,14 +230,14 @@ func (cf *frontClientFactory) Dial(network, addr string, dialFn base.DialFunc, a
 		return nil, err
 	}
 	dialConn := conn
-	if conn, err = newfrontClientConn(conn, ca); err != nil {
+	if conn, err = newRandomwtClientConn(conn, ca); err != nil {
 		dialConn.Close()
 		return nil, err
 	}
 	return conn, nil
 }
 
-type frontServerFactory struct {
+type randomwtServerFactory struct {
 	transport base.Transport
 	args      *pt.Args
 
@@ -259,25 +245,26 @@ type frontServerFactory struct {
 	identityKey  *ntor.Keypair
 	lenSeed      *drbg.Seed
 
-	wMin       float32     // in seconds
-	wMax       float32     // in seconds
-	nServer    int
-	nClient    int
+	nClientReal  int
+	nServerReal  int
+	nClientFake  int
+	nServerFake  int
+	pFake        float64
 	
 	replayFilter *replayfilter.ReplayFilter
 	closeDelay int
 }
 
-func (sf *frontServerFactory) Transport() base.Transport {
+func (sf *randomwtServerFactory) Transport() base.Transport {
 	return sf.transport
 }
 
-func (sf *frontServerFactory) Args() *pt.Args {
+func (sf *randomwtServerFactory) Args() *pt.Args {
 	return sf.args
 }
 
-func (sf *frontServerFactory) WrapConn(conn net.Conn) (net.Conn, error) {
-	// Not much point in having a separate newFrontServerConn routine when
+func (sf *randomwtServerFactory) WrapConn(conn net.Conn) (net.Conn, error) {
+	// Not much point in having a separate newRandomwtServerConn routine when
 	// wrapping requires using values from the factory instance.
 
 	// Generate the session keypair *before* consuming data from the peer, to
@@ -290,13 +277,13 @@ func (sf *frontServerFactory) WrapConn(conn net.Conn) (net.Conn, error) {
 		return nil, err
 	}
 
-	paddingChan := make(chan bool)
+	canSendChan := make(chan uint32, 1)
 
 	lenDist := probdist.New(sf.lenSeed, 0, framing.MaximumSegmentLength, false)
 	logger := &traceLogger{gPRCServer: grpc.NewServer(), logOn: nil, logPath: nil}
 	// The server's initial state is intentionally set to stateStart at the very beginning to obfuscate the RTT between client and server
-	c := &frontConn{conn, true, lenDist,  sf.wMin, sf.wMax, sf.nServer, sf.nClient,logger, stateStop, paddingChan, nil, bytes.NewBuffer(nil), bytes.NewBuffer(nil), make([]byte, consumeReadSize), nil, nil}
-	log.Debugf("Server pt con status: isServer: %v, w-min: %.1f, w-max: %.1f, n-server: %d, n-client: %d", c.isServer, c.wMin, c.wMax, c.nServer, c.nClient)
+	c := &randomwtConn{conn, true, lenDist,  sf.nClientReal, sf.nServerReal, sf.nClientFake, sf.nServerFake,sf.pFake, logger, stateStop, canSendChan, nil, bytes.NewBuffer(nil), bytes.NewBuffer(nil), make([]byte, consumeReadSize), nil, nil}
+	log.Debugf("Server pt con status: isServer: %v, n-client-real: %d, n-server-real: %d, n-client-fake: %d, n-server-fake: %d, p-fake: %.1f", c.isServer, c.nClientReal, c.nServerReal, c.nClientFake, c.nServerFake, c.pFake)
 	startTime := time.Now()
 
 	if err = c.serverHandshake(sf, sessionKey); err != nil {
@@ -308,22 +295,23 @@ func (sf *frontServerFactory) WrapConn(conn net.Conn) (net.Conn, error) {
 	return c, nil
 }
 
-type frontConn struct {
+type randomwtConn struct {
 	net.Conn
 
-	isServer  bool
+	isServer     bool
 
-	lenDist   *probdist.WeightedDist
-	wMin       float32     // in seconds
-	wMax       float32     // in seconds
-	nServer    int
-	nClient    int
+	lenDist      *probdist.WeightedDist
+	nClientReal  int
+	nServerReal  int
+	nClientFake  int
+	nServerFake  int
+	pFake        float64
 
 	logger *traceLogger
 
 	state     uint32
 
-	paddingChan          chan bool   // true when start defense, false when stop defense
+	canSendChan          chan uint32
 	loggerChan           chan []int64
 	receiveBuffer        *bytes.Buffer
 	receiveDecodedBuffer *bytes.Buffer
@@ -333,8 +321,7 @@ type frontConn struct {
 	decoder *framing.Decoder
 }
 
-
-func newfrontClientConn(conn net.Conn, args *frontClientArgs) (c *frontConn, err error) {
+func newRandomwtClientConn(conn net.Conn, args *randomwtClientArgs) (c *randomwtConn, err error) {
 	// Generate the initial protocol polymorphism distribution(s).
 	var seed *drbg.Seed
 	if seed, err = drbg.NewSeed(); err != nil {
@@ -347,7 +334,7 @@ func newfrontClientConn(conn net.Conn, args *frontClientArgs) (c *frontConn, err
 	} else {
 		loggerChan = nil
 	}
-	paddingChan := make(chan bool)
+	canSendChan := make(chan uint32, 1)
 
 	logPath := atomic.Value{}
 	logPath.Store("")
@@ -371,9 +358,8 @@ func newfrontClientConn(conn net.Conn, args *frontClientArgs) (c *frontConn, err
 	}
 
 	// Allocate the client structure.
-	c = &frontConn{conn, false, lenDist, args.wMin, args.wMax, args.nServer, args.nClient, logger, stateStop, paddingChan, loggerChan, bytes.NewBuffer(nil), bytes.NewBuffer(nil), make([]byte, consumeReadSize), nil, nil}
-
-	log.Debugf("Client pt con status: isServer: %v, w-min: %.2f, w-max: %.2f, n-server: %d, n-client: %d", c.isServer, c.wMin, c.wMax, c.nServer, c.nClient)
+	c = &randomwtConn{conn, false, lenDist, args.nClientReal, args.nServerReal, args.nClientFake, args.nServerFake, args.pFake, logger, stateStop, canSendChan, loggerChan, bytes.NewBuffer(nil), bytes.NewBuffer(nil), make([]byte, consumeReadSize), nil, nil}
+	log.Debugf("Server pt con status: isServer: %v, n-client-real: %d, n-server-real: %d, n-client-fake: %d, n-server-fake: %d, p-fake: %.1f", c.isServer, c.nClientReal, c.nServerReal, c.nClientFake, c.nServerFake, c.pFake)
 	// Start the handshake timeout.
 	deadline := time.Now().Add(clientHandshakeTimeout)
 	if err = conn.SetDeadline(deadline); err != nil {
@@ -392,7 +378,15 @@ func newfrontClientConn(conn net.Conn, args *frontClientArgs) (c *frontConn, err
 	return
 }
 
-func (conn *frontConn) clientHandshake(nodeID *ntor.NodeID, peerIdentityKey *ntor.PublicKey, sessionKey *ntor.Keypair) error {
+func (conn *randomwtConn) returnRoleString() string {
+	if conn.isServer{
+		return "Server"
+	} else {
+		return "Client"
+	}
+}
+
+func (conn *randomwtConn) clientHandshake(nodeID *ntor.NodeID, peerIdentityKey *ntor.PublicKey, sessionKey *ntor.Keypair) error {
 	if conn.isServer {
 		return fmt.Errorf("clientHandshake called on server connection")
 	}
@@ -435,7 +429,7 @@ func (conn *frontConn) clientHandshake(nodeID *ntor.NodeID, peerIdentityKey *nto
 	}
 }
 
-func (conn *frontConn) serverHandshake(sf *frontServerFactory, sessionKey *ntor.Keypair) error {
+func (conn *randomwtConn) serverHandshake(sf *randomwtServerFactory, sessionKey *ntor.Keypair) error {
 	if !conn.isServer {
 		return fmt.Errorf("serverHandshake called on client connection")
 	}
@@ -507,7 +501,7 @@ func (conn *frontConn) serverHandshake(sf *frontServerFactory, sessionKey *ntor.
 	return nil
 }
 
-func (conn *frontConn) Read(b []byte) (n int, err error) {
+func (conn *randomwtConn) Read(b []byte) (n int, err error) {
 	// If there is no payload from the previous Read() calls, consume data off
 	// the network.  Not all data received is guaranteed to be usable payload,
 	// so do this in a loop till data is present or an error occurs.
@@ -538,54 +532,43 @@ func (conn *frontConn) Read(b []byte) (n int, err error) {
 }
 
 
-func (conn *frontConn) initFrontArgs(N int, tsQueue *queue.FixedFIFO) (err error){
-	wSampler := distuv.Uniform{Min: float64(conn.wMin), Max: float64(conn.wMax),
-		Src: expRand.NewSource(uint64(time.Now().UTC().UnixNano()))}
-	n_sampler := distuv.Uniform{Min: 1.0, Max: float64(N),
-		Src: expRand.NewSource(uint64(time.Now().UTC().UnixNano()))}
-	w_tmp := wSampler.Rand()
-	n_tmp := int(n_sampler.Rand())
-	log.Debugf("[Init] Sampled w: %.2fs, n: %d", w_tmp, n_tmp)
-	tSampler := distuv.Weibull{K: 2, Lambda: math.Sqrt2 * w_tmp,
-		Src: expRand.NewSource(uint64(time.Now().UTC().UnixNano()))}
-	ts := make([]float64, n_tmp)
-	for i := 0; i  < n_tmp; i++ {
-		ts[i] = tSampler.Rand()
+func sampleSendFake (n int, sendChan chan PacketInfo) (burstSize int){
+	burstSize = utils.Uniform(0, float64(n))
+	for i := 0; i < burstSize; i++ {
+		sendChan <- PacketInfo{pktType: packetTypeDummy, data: []byte{}, padLen: maxPacketPaddingLength}
 	}
-	sort.Float64s(ts)
-	for tsQueue.GetLen() > 0 {
-		//empty the queue before refill it
-		_, _ = tsQueue.Dequeue()
-	}
-	for i:= 0; i< n_tmp; i++ {
-		err := tsQueue.Enqueue(time.Duration(int64(ts[i] * 1e9)))
-		if err != nil {
-			return err
-		}
-	}
-	return
+	return burstSize
 }
 
-func (conn *frontConn) ReadFrom(r io.Reader) (written int64, err error) {
-	log.Debugf("[State] Enter copyloop state: %v (%v is stateStart, %v is statStop)", conn.state, stateStart, stateStop)
+
+func (conn *randomwtConn) tearDown() {
+	var frameBuf bytes.Buffer
+	_ = conn.makePacket(&frameBuf, packetTypeTearDown, []byte{}, maxPacketPaddingLength)
+	_, _ = conn.Conn.Write(frameBuf.Bytes())
+}
+
+func (conn *randomwtConn) ReadFrom(r io.Reader) (written int64, err error) {
+	log.Debugf("[State] Enter copyloop state: %v", stateMap[conn.state])
 	closeChan := make(chan int)
 	defer close(closeChan)
 	defer conn.logger.gPRCServer.Stop()
+	defer conn.tearDown()
+
 
 	errChan := make(chan error, 5)  // errors from all the go routines will be sent to this channel
 	sendChan := make(chan PacketInfo, 65535) // all packed packets are sent through this channel
-
 	var realNSeg uint32 = 0  // real packet counter over 1 second
 	var receiveBuf bytes.Buffer //read payload from upstream and buffer here
-	var frontInitTime atomic.Value
-	var tsQueue *queue.FixedFIFO // maintain a queue of timestamps sampled
-	var maxPaddingN int
+	var sendBuf   bytes.Buffer // used to buffer packets ready to be sent since wt requires to send out a burst all at once
+	var nReal int
+	var nFake int
 	if conn.isServer {
-		maxPaddingN = conn.nServer
+		nReal = conn.nServerReal
+		nFake = conn.nServerFake
 	} else {
-		maxPaddingN = conn.nClient
+		nReal = conn.nClientReal
+		nFake = conn.nClientFake
 	}
-	tsQueue = queue.NewFixedFIFO(maxPaddingN)
 
 	//client side launch trace logger routine
 	if traceLogEnabled && !conn.isServer {
@@ -622,166 +605,154 @@ func (conn *frontConn) ReadFrom(r io.Reader) (written int64, err error) {
 				pktType := packetInfo.pktType
 				data    := packetInfo.data
 				padLen  := packetInfo.padLen
+
 				var frameBuf bytes.Buffer
 				err = conn.makePacket(&frameBuf, pktType, data, padLen)
 				if err != nil {
 					errChan <- err
 					return
 				}
-				_, wtErr := conn.Conn.Write(frameBuf.Bytes())
-				if wtErr != nil {
-					errChan <- wtErr
-					log.Noticef("[Routine] Send routine exits by write err.")
-					return
-				}
-				if !conn.isServer && traceLogEnabled && conn.logger.logOn.Load().(bool) {
-					conn.loggerChan <- []int64{time.Now().UnixNano(), int64(len(data)), int64(padLen)}
-				}
-				log.Debugf("[Send] %-8s, %-3d+ %-3d bytes at %v", pktTypeMap[pktType], len(data), padLen, time.Now().Format("15:04:05.000"))
-			}
-		}
-	}()
 
-	//create a go routine to receive padding signal and schdule dummy pkts
-	//true: need to init front params
-	//false: need to cancel unsent dummy packets
-	go func() {
-		for{
-			select{
-			case _, ok := <- closeChan:
-				if !ok{
-					log.Noticef("[Routine] padding factory exits by closedChan.")
+				_, err := sendBuf.Write(frameBuf.Bytes())
+				if err != nil {
+					log.Noticef("[Routine] Send routine exits by write err.")
+					errChan <- err
 					return
 				}
-			case startPadding := <- conn.paddingChan:
-				if startPadding {
-					err := conn.initFrontArgs(maxPaddingN, tsQueue)
-					if err != nil {
-						errChan <- err
-						log.Noticef("[Routine] padding factory exits by err in init.")
+
+				if pktType == packetTypeFakeFinish || pktType == packetTypeRealFinish {
+					_, wtErr := conn.Conn.Write(sendBuf.Bytes())
+					if wtErr != nil {
+						errChan <- wtErr
+						log.Noticef("[Routine] Send routine exits by write err.")
 						return
 					}
-					frontInitTime.Store(time.Now())
-					log.Debugf("[Event] Get %v dummy packets to send", tsQueue.GetLen())
+					//log.Debugf("[Snd] send a burst of size %-2d at %v", sendBuf.Len()/557, time.Now().Format("15:04:05.000"))
+					sendBuf.Reset()
 				} else {
-					log.Debugf("[Event] Empty the ts queue (len %v)", tsQueue.GetLen())
-					for tsQueue.GetLen() > 0 {
-						_, _ = tsQueue.Dequeue()
+					// note that the attacker knows the protocol, therefore, the attacker
+					// always discard the last packet in this burst, since the last one is
+					// always the finish type packet (which does not contain any payload)
+					// therefore, the logger will not log that pkt
+					if !conn.isServer && traceLogEnabled && conn.logger.logOn.Load().(bool) {
+						conn.loggerChan <- []int64{time.Now().UnixNano(), int64(len(data)), int64(padLen)}
 					}
+					//log.Debugf("[Send] %-8s, %-3d+ %-3d bytes at %v", pktTypeMap[pktType], len(data), padLen, time.Now().Format("15:04:05.000"))
 				}
 			}
 		}
 	}()
 
-	go func() {
-		for{
-			select {
-			case _, ok := <-closeChan:
-				if !ok {
-					log.Noticef("[Routine] padding routine exits by closedChan.")
-					return
-				}
-			default:
-				// here to send out dummy packets
-				if atomic.LoadUint32(&conn.state) == stateStop {
-					time.Sleep(20 * time.Millisecond)
-					continue
-				}
-				timestamp, qErr := tsQueue.DequeueOrWaitForNextElement()
-				if qErr != nil {
-					log.Noticef("[Routine] padding routine exits by dequeue err.")
-					errChan <- qErr
-					return
-				}
-				utils.SleepRho(frontInitTime.Load().(time.Time) ,timestamp.(time.Duration))
-				sendChan <- PacketInfo{pktType: packetTypeDummy, data: []byte{},  padLen: maxPacketPaddingLength}
-			}
-		}
-	}()
 
-	// this go routine regularly check the real throughput
-	// if it is small, change to stop state
-	go func() {
-		ticker := time.NewTicker(time.Second)
-		defer ticker.Stop()
-		for{
-			select{
-			case _, ok := <- closeChan:
-				if !ok {
-					log.Noticef("[Routine] Ticker routine exits by closeChan.")
-					return
-				}
-			case <- ticker.C:
-				//log.Debugf("NRealSeg %v at %v", realNSeg, time.Now().Format("15:04:05.000000"))
-				if !conn.isServer && atomic.LoadUint32(&conn.state) != stateStop && atomic.LoadUint32(&realNSeg) < 2 {
-					log.Debugf("[State] %s -> %s.", stateMap[atomic.LoadUint32(&conn.state)], stateMap[stateStop])
-					atomic.StoreUint32(&conn.state, stateStop)
-					sendChan <- PacketInfo{pktType: packetTypeSignalStop, data: []byte{}, padLen: maxPacketPaddingLength}
-					conn.paddingChan <- false
-				}
-				atomic.StoreUint32(&realNSeg, 0) //reset counter
-			}
-		}
-	}()
-
+	timer := time.NewTimer(maxWaitingTime)
+	defer timer.Stop()
+	if !conn.isServer {
+		// client initiate the communication
+		conn.canSendChan <- signalReal
+	}
+	var dummyRound = 0
 	for {
 		select {
 		case conErr := <- errChan:
 			log.Noticef("downstream copy loop terminated at %v. Reason: %v", time.Now().Format("15:04:05.000000"), conErr)
 			return written, conErr
-		default:
-			buf := make([]byte, 65535)
-			rdLen, err := r.Read(buf[:])
-			if err!= nil {
-				log.Noticef("Exit by read err:%v", err)
-				return written, err
-			}
-			if rdLen > 0 {
-				receiveBuf.Write(buf[: rdLen])
-			} else {
-				log.Errorf("BUG? read 0 bytes, err: %v", err)
+		case signal :=<- conn.canSendChan:
+			log.Debugf("------Enter the send loop------")
+			log.Debugf("signal: %v", signalMap[signal])
+			if signal == signalTearDown {
+				log.Noticef("tear down signal from otherside.")
 				return written, io.EOF
 			}
-			//signal server to start if there is more than one cell coming
-			// else switch to padding state
-			// stop -> ready -> start
-			if !conn.isServer {
-				if (atomic.LoadUint32(&conn.state) == stateStop && rdLen > maxPacketPayloadLength) ||
-					(atomic.LoadUint32(&conn.state) == stateReady) {
-					log.Debugf("[State] %s -> %s.", stateMap[atomic.LoadUint32(&conn.state)], stateMap[stateStart])
-					atomic.StoreUint32(&conn.state, stateStart)
-					sendChan <- PacketInfo{pktType: packetTypeSignalStart, data: []byte{}, padLen: maxPacketPaddingLength}
-					conn.paddingChan <- true
-				} else if atomic.LoadUint32(&conn.state) == stateStop {
-					log.Debugf("[State] %s -> %s.", stateMap[stateStop], stateMap[stateReady])
-					atomic.StoreUint32(&conn.state, stateReady)
+
+			// signal = true means client send a real burst; else send a fake burst
+			// client decides to send a fake burst by roll a dice of p-fake, this server must respond with a fake burst.
+			// therefore, `signal` is only useful on the server side
+
+			// probalistically send a dummy burst
+			if !conn.isServer{
+				if dummyRound % 2 == 0 {
+					// first client decide whether or not send a fake burst
+					shouldSendFake := utils.Bernoulli(conn.pFake)
+					log.Debugf("Sample with p-fake:%v", shouldSendFake)
+					if shouldSendFake == 1 {
+						burstSize := sampleSendFake(nFake, sendChan)
+						sendChan <- PacketInfo{pktType: packetTypeFakeFinish, data: []byte{}, padLen: maxPacketPaddingLength}
+						log.Debugf("[dummy] send a fake burst of size %-2d at %v", burstSize + 1, time.Now().Format("15:04:05.000"))
+					}
+					continue
+				} else {
+					//send real
 				}
+				dummyRound = (dummyRound + 1) % 2
+
+			} else if signal == signalDummy {
+				// for server, if receive a fake burst from client, respond with a fake burst
+				burstSize := sampleSendFake(nFake, sendChan)
+				sendChan <- PacketInfo{pktType: packetTypeFakeFinish, data: []byte{}, padLen: maxPacketPaddingLength}
+				log.Debugf("[dummy] send a fake burst of size %-2d at %v", burstSize + 1, time.Now().Format("15:04:05.000"))
 			}
-			for receiveBuf.Len() > 0 {
-				var payload [maxPacketPayloadLength]byte
-				rdLen, rdErr := receiveBuf.Read(payload[:])
-				written += int64(rdLen)
-				if rdErr != nil {
-					log.Noticef("Exit by read buffer err:%v", rdErr)
-					return written, rdErr
+
+			// send a real burst, at most wait for `maxWaitingTime`
+			// if timeout, send a total fake burst
+			if !conn.isServer || (conn.isServer && signal == signalReal) {
+				err = r.(net.Conn).SetReadDeadline(time.Now().Add(maxWaitingTime)) // timeout
+				if err != nil {
+					log.Errorf("setReadDeadline failed:", err)
+					return 0, err
 				}
-				sendChan <- PacketInfo{pktType: packetTypePayload, data: payload[:rdLen], padLen: uint16(maxPacketPaddingLength-rdLen)}
-				atomic.AddUint32(&realNSeg, 1)
+
+				buf := make([]byte, 65535)
+				rdLen, rdErr := r.Read(buf[:])
+				if rdErr == nil {
+					// no err
+				} else if netErr, ok := rdErr.(net.Error); ok && netErr.Timeout() {
+					// timeout err
+				} else{
+					return 0, rdErr
+				}
+
+				if rdLen == 0 {
+					// timeout, no real data
+					burstSize := sampleSendFake(nFake, sendChan)
+					// still need to use realfinish signal otherwise the server wound respond with a fake burst
+					// without trying to fetch data from its upstream
+					sendChan <- PacketInfo{pktType: packetTypeRealFinish, data: []byte{}, padLen: maxPacketPaddingLength}
+					log.Debugf("[timeout] send a fake burst of size %-2d at %v", burstSize + 1, time.Now().Format("15:04:05.000"))
+				} else {
+					burstSize := 0
+					// has real data
+					receiveBuf.Write(buf[: rdLen])
+					for receiveBuf.Len() > 0 {
+						var payload [maxPacketPayloadLength]byte
+						rdLen, rdErr := receiveBuf.Read(payload[:])
+						written += int64(rdLen)
+						if rdErr != nil {
+							log.Noticef("Exit by read buffer err:%v", rdErr)
+							return written, rdErr
+						}
+						sendChan <- PacketInfo{pktType: packetTypePayload, data: payload[:rdLen], padLen: uint16(maxPacketPaddingLength-rdLen)}
+						atomic.AddUint32(&realNSeg, 1)
+						burstSize += 1
+					}
+					burstSize += sampleSendFake(nReal, sendChan)
+					sendChan <- PacketInfo{pktType: packetTypeRealFinish, data: []byte{}, padLen: maxPacketPaddingLength}
+					log.Debugf("[real] send a real burst of size %-2d at %v", burstSize + 1, time.Now().Format("15:04:05.000"))
+				}
 			}
 		}
 	}
 }
 
 
-func (conn *frontConn) SetDeadline(t time.Time) error {
+func (conn *randomwtConn) SetDeadline(t time.Time) error {
 	return syscall.ENOTSUP
 }
 
-func (conn *frontConn) SetWriteDeadline(t time.Time) error {
+func (conn *randomwtConn) SetWriteDeadline(t time.Time) error {
 	return syscall.ENOTSUP
 }
 
-func (conn *frontConn) closeAfterDelay(sf *frontServerFactory, startTime time.Time) {
+func (conn *randomwtConn) closeAfterDelay(sf *randomwtServerFactory, startTime time.Time) {
 	// I-it's not like I w-wanna handshake with you or anything.  B-b-baka!
 	defer conn.Conn.Close()
 
@@ -802,7 +773,7 @@ func (conn *frontConn) closeAfterDelay(sf *frontServerFactory, startTime time.Ti
 
 
 
-var _ base.ClientFactory = (*frontClientFactory)(nil)
-var _ base.ServerFactory = (*frontServerFactory)(nil)
+var _ base.ClientFactory = (*randomwtClientFactory)(nil)
+var _ base.ServerFactory = (*randomwtServerFactory)(nil)
 var _ base.Transport = (*Transport)(nil)
-var _ net.Conn = (*frontConn)(nil)
+var _ net.Conn = (*randomwtConn)(nil)
