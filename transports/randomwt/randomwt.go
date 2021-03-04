@@ -351,9 +351,9 @@ func newRandomwtClientConn(conn net.Conn, args *randomwtClientArgs) (c *randomwt
 			return nil, err
 		}
 		go func() {
-			log.Noticef("[Routine] gRPC server starts listeners.")
+			log.Infof("[Routine] gRPC server starts listeners.")
 			server.Serve(listen)
-			log.Noticef("[Routine] gRPC server exits.")
+			log.Infof("[Routine] gRPC server exits.")
 		}()
 	}
 
@@ -552,12 +552,12 @@ func (conn *randomwtConn) ReadFrom(r io.Reader) (written int64, err error) {
 	//client side launch trace logger routine
 	if traceLogEnabled && !conn.isServer {
 		go func() {
-			log.Noticef("[Routine] Client traceLogger turns on.")
+			log.Infof("[Routine] Client traceLogger turns on.")
 			for {
 				select {
 				case _, ok := <- closeChan:
 					if !ok {
-						log.Noticef("[Routine] traceLogger exits by closeChan signal.")
+						log.Infof("[Routine] traceLogger exits by closeChan signal.")
 						return
 					}
 				case pktinfo, ok := <- conn.loggerChan:
@@ -577,7 +577,7 @@ func (conn *randomwtConn) ReadFrom(r io.Reader) (written int64, err error) {
 			select{
 			case _, ok := <- closeChan:
 				if !ok{
-					log.Noticef("[Routine] Send routine exits by closedChan.")
+					log.Infof("[Routine] Send routine exits by closedChan.")
 					return
 				}
 			case packetInfo := <- writeChan:
@@ -596,7 +596,7 @@ func (conn *randomwtConn) ReadFrom(r io.Reader) (written int64, err error) {
 				_, wtErr := conn.Conn.Write(frameBuf.Bytes())
 				if wtErr != nil {
 					errChan <- wtErr
-					log.Noticef("[Routine] Send routine exits by write err.")
+					log.Infof("[Routine] Send routine exits by write err.")
 					return
 				}
 				if !conn.isServer && traceLogEnabled && conn.logger.logOn.Load().(bool) {
@@ -620,7 +620,7 @@ func (conn *randomwtConn) ReadFrom(r io.Reader) (written int64, err error) {
 			select{
 			case _, ok := <- closeChan:
 				if !ok {
-					log.Noticef("[Routine] Ticker routine exits by closeChan.")
+					log.Infof("[Routine] Ticker routine exits by closeChan.")
 					return
 				}
 			case <- ticker.C:
@@ -646,12 +646,12 @@ func (conn *randomwtConn) ReadFrom(r io.Reader) (written int64, err error) {
 	for {
 		select {
 		case conErr := <- errChan:
-			log.Noticef("downstream copy loop terminated at %v. Reason: %v", time.Now().Format("15:04:05.000000"), conErr)
+			log.Infof("downstream copy loop terminated at %v. Reason: %v", time.Now().Format("15:04:05.000000"), conErr)
 			return written, conErr
 		case signal :=<- conn.canSendChan:
 			log.Debugf("------Enter the send loop------")
 			if signal == signalTearDown {
-				log.Noticef("teardown signal from otherside.")
+				log.Infof("teardown signal from otherside.")
 				return written, io.EOF
 			}
 			var wLen int64
