@@ -165,7 +165,9 @@ func (conn *randomwtConn) readPackets() (err error) {
 
 
 		if !conn.isServer && traceLogEnabled && conn.logger.logOn.Load().(bool) && pktType != packetTypePrngSeed{
-			conn.loggerChan <- []int64{time.Now().UnixNano(), -int64(payloadLen), -(int64(decLen - packetOverhead) - int64(payloadLen))}
+			if pktType != packetTypeFakeFinish && pktType != packetTypeRealFinish {
+				conn.loggerChan <- []int64{time.Now().UnixNano(), -int64(payloadLen), -(int64(decLen - packetOverhead) - int64(payloadLen))}
+			}
 		}
 
 		switch pktType {
