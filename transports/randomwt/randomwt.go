@@ -540,13 +540,14 @@ func (conn *randomwtConn) tearDown() {
 func (conn *randomwtConn) ReadFrom(r io.Reader) (written int64, err error) {
 	log.Debugf("[State] Enter copyloop state: %v", stateMap[conn.state])
 	closeChan := make(chan int)
+	var realNSeg uint32
 	defer close(closeChan)
 	defer conn.logger.gPRCServer.Stop()
 	defer conn.tearDown()
 
 
 	errChan := make(chan error, 5)  // errors from all the go routines will be sent to this channel
-	sendChan := make(chan PacketInfo, 65535) // all packed packets are sent through this channel
+	writeChan := make(chan PacketInfo, 65535) // all packed packets are sent through this channel
 
 	//client side launch trace logger routine
 	if traceLogEnabled && !conn.isServer {
@@ -579,10 +580,13 @@ func (conn *randomwtConn) ReadFrom(r io.Reader) (written int64, err error) {
 					log.Noticef("[Routine] Send routine exits by closedChan.")
 					return
 				}
-			case packetInfo := <- sendChan:
+			case packetInfo := <- writeChan:
 				pktType := packetInfo.pktType
 				data    := packetInfo.data
 				padLen  := packetInfo.padLen
+				if pktType == packetTypePayload {
+					atomic.AddUint32(&realNSeg, 1)
+				}
 				var frameBuf bytes.Buffer
 				err = conn.makePacket(&frameBuf, pktType, data, padLen)
 				if err != nil {
@@ -596,13 +600,42 @@ func (conn *randomwtConn) ReadFrom(r io.Reader) (written int64, err error) {
 					return
 				}
 				if !conn.isServer && traceLogEnabled && conn.logger.logOn.Load().(bool) {
-					conn.loggerChan <- []int64{time.Now().UnixNano(), int64(len(data)), int64(padLen)}
+					if pktType != packetTypeFakeFinish && pktType != packetTypeRealFinish {
+						// we assume that the attacker knows the protocol
+						// therefore, he can simply always remove the last packet of a burst which is a FakeFinish or RealFinish dummy packet
+						conn.loggerChan <- []int64{time.Now().UnixNano(), int64(len(data)), int64(padLen)}
+					}
 				}
 				log.Debugf("[Send] %-10s, %-3d+%-3d bytes at %v", pktTypeMap[pktType], len(data), padLen, time.Now().Format("15:04:05.000"))
 			}
 		}
 	}()
 
+	// this go routine regularly checks the real throughput
+	// if it is small, change to stop state
+	go func() {
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		for{
+			select{
+			case _, ok := <- closeChan:
+				if !ok {
+					log.Noticef("[Routine] Ticker routine exits by closeChan.")
+					return
+				}
+			case <- ticker.C:
+				//log.Debugf("NRealSeg %v at %v", realNSeg, time.Now().Format("15:04:05.000000"))
+				if !conn.isServer && atomic.LoadUint32(&conn.state) != stateStop && atomic.LoadUint32(&realNSeg) < 2 {
+					// stateStartReady -> stateStop
+					// stateSart -> stateStop
+					writeChan <- PacketInfo{pktType: packetTypeSignalStop, data: []byte{}, padLen: maxPacketPaddingLength}
+					log.Debugf("[State] %s -> %s.", stateMap[atomic.LoadUint32(&conn.state)], stateMap[stateStop])
+					atomic.StoreUint32(&conn.state, stateStop)
+				}
+				atomic.StoreUint32(&realNSeg, 0) //reset counter
+			}
+		}
+	}()
 
 	if !conn.isServer {
 		// client initiate the communication
@@ -624,10 +657,10 @@ func (conn *randomwtConn) ReadFrom(r io.Reader) (written int64, err error) {
 			var wLen int64
 			var wErr error
 			if !conn.isServer{
-				wLen, wErr = conn.clientTalkie(isFakeTurn, sendChan, r.(net.Conn))
+				wLen, wErr = conn.clientTalkie(isFakeTurn, writeChan, r.(net.Conn))
 				isFakeTurn = (isFakeTurn + 1) % 2
 			} else {
-				wLen, wErr = conn.serverTalkie(signal, sendChan, r.(net.Conn))
+				wLen, wErr = conn.serverTalkie(signal, writeChan, r.(net.Conn))
 			}
 			written += wLen
 			if wErr != nil {
@@ -637,34 +670,40 @@ func (conn *randomwtConn) ReadFrom(r io.Reader) (written int64, err error) {
 	}
 }
 
-func (conn *randomwtConn) clientTalkie(isFakeTurn uint32, sendChan chan PacketInfo, r net.Conn) (written int64, err error){
+func (conn *randomwtConn) clientTalkie(isFakeTurn uint32, writeChan chan PacketInfo, r net.Conn) (written int64, err error){
 	log.Debugf("isFakeTurn: %v", isFakeTurn)
-	if isFakeTurn % 2 == 1 {
+	var burstSize int
+	if atomic.LoadUint32(&conn.state) != stateStop && isFakeTurn % 2 == 1 {
 		// send a fake burst
 		shouldSendFake := utils.Bernoulli(conn.pFake)
 		if shouldSendFake == 1 {
-			burstSize := sampleDummyBurst(conn.nClientFake, sendChan)
-			sendChan <- PacketInfo{pktType: packetTypeFakeFinish, data: []byte{}, padLen: maxPacketPaddingLength}
+			burstSize = conn.sampleDummyBurst(conn.nClientFake, writeChan)
+			writeChan <- PacketInfo{pktType: packetTypeFakeFinish, data: []byte{}, padLen: maxPacketPaddingLength}
 			log.Debugf("[fake] send a fake burst of size %-2d at %v", burstSize + 1, time.Now().Format("15:04:05.000"))
+		} else {
+			// skip this round
+			log.Debugf("[Event] skip this fake sending round")
+			conn.canSendChan <- signalReal
 		}
 		return 0, nil
 	} else {
 		// send a real burst
-		written, err = padRealBurst(conn.nClientFake, conn.nClientReal, sendChan, r)
+		written, err = conn.padRealBurst(writeChan, r)
 		return written, err
 	}
 }
 
-func (conn *randomwtConn) serverTalkie(signal uint32, sendChan chan PacketInfo, r net.Conn) (written int64, err error){
+func (conn *randomwtConn) serverTalkie(signal uint32, writeChan chan PacketInfo, r net.Conn) (written int64, err error){
 	log.Debugf("signal: %v", signalMap[signal])
+	var burstSize int
 	if signal == signalDummy {
 		// send a fake burst
-		burstSize := sampleDummyBurst(conn.nServerFake, sendChan)
-		sendChan <- PacketInfo{pktType: packetTypeFakeFinish, data: []byte{}, padLen: maxPacketPaddingLength}
+		burstSize = conn.sampleDummyBurst(conn.nServerFake, writeChan)
+		writeChan <- PacketInfo{pktType: packetTypeFakeFinish, data: []byte{}, padLen: maxPacketPaddingLength}
 		log.Debugf("[fake] send a fake burst of size %-2d at %v", burstSize + 1, time.Now().Format("15:04:05.000"))
 		return 0, nil
 	} else if signal == signalReal {
-		written, err = padRealBurst(conn.nServerFake, conn.nServerReal, sendChan, r)
+		written, err = conn.padRealBurst(writeChan, r)
 	} else {
 		panic(fmt.Sprintf("[Error] Received invalid signal '%v'", signal))
 	}
@@ -672,16 +711,30 @@ func (conn *randomwtConn) serverTalkie(signal uint32, sendChan chan PacketInfo, 
 }
 
 
-func sampleDummyBurst (n int, sendChan chan PacketInfo) (burstSize int){
+func (conn *randomwtConn) sampleDummyBurst (n int, writeChan chan PacketInfo) (burstSize int){
+	if atomic.LoadUint32(&conn.state) == stateStop {
+		return 0
+	}
 	burstSize = utils.Uniform(0, float64(n))
 	log.Debugf("Max N: %v, sampled N: %v", n, burstSize)
 	for i := 0; i < burstSize; i++ {
-		sendChan <- PacketInfo{pktType: packetTypeDummy, data: []byte{}, padLen: maxPacketPaddingLength}
+		writeChan <- PacketInfo{pktType: packetTypeDummy, data: []byte{}, padLen: maxPacketPaddingLength}
 	}
 	return burstSize
 }
 
-func padRealBurst (nFake int, nReal int, sendChan chan PacketInfo, r io.Reader) (written int64, err error) {
+func (conn *randomwtConn) padRealBurst (writeChan chan PacketInfo, r io.Reader) (written int64, err error) {
+	var nFake int
+	var nReal int
+	var curState uint32
+	if conn.isServer {
+		nFake = conn.nServerFake
+		nReal = conn.nServerReal
+	} else {
+		nFake = conn.nClientFake
+		nReal = conn.nClientReal
+	}
+
 	// send a real burst
 	err = r.(net.Conn).SetReadDeadline(time.Now().Add(maxWaitingTime)) // timeout
 	if err != nil {
@@ -692,6 +745,27 @@ func padRealBurst (nFake int, nReal int, sendChan chan PacketInfo, r io.Reader) 
 	rdLen, rdErr := r.Read(buf[:])
 	if rdErr == nil {
 		// no err
+		if !conn.isServer {
+			//stateStop -(one cell)-> stateStartReady -(one cell)-> stateStart
+			curState = atomic.LoadUint32(&conn.state)
+			var nextState uint32
+			if curState == stateStop {
+				if rdLen <= maxPacketPayloadLength {
+					nextState = stateStartReady
+				} else {
+					nextState = stateStart
+				}
+			} else if curState == stateStartReady {
+				nextState = stateStart
+			}
+			if nextState == stateStart && curState != stateStart {
+				//signal server to start.
+				writeChan <- PacketInfo{pktType: packetTypeSignalStart, data: []byte{}, padLen: maxPacketPaddingLength}
+			}
+			atomic.StoreUint32(&conn.state, nextState)
+			log.Debugf("[State] %s -> %s", stateMap[curState], stateMap[nextState])		
+		}
+		
 		var receiveBuf bytes.Buffer
 		burstSize := 0
 		// has real data
@@ -704,19 +778,19 @@ func padRealBurst (nFake int, nReal int, sendChan chan PacketInfo, r io.Reader) 
 			if rErr != nil {
 				return written, rErr
 			}
-			sendChan <- PacketInfo{pktType: packetTypePayload, data: payload[:rLen], padLen: uint16(maxPacketPaddingLength-rLen)}
+			writeChan <- PacketInfo{pktType: packetTypePayload, data: payload[:rLen], padLen: uint16(maxPacketPaddingLength-rLen)}
 			burstSize += 1
 		}
-
-		burstSize += sampleDummyBurst(nReal, sendChan)
-		sendChan <- PacketInfo{pktType: packetTypeRealFinish, data: []byte{}, padLen: maxPacketPaddingLength}
+		burstSize += conn.sampleDummyBurst(nReal, writeChan)
+		writeChan <- PacketInfo{pktType: packetTypeRealFinish, data: []byte{}, padLen: maxPacketPaddingLength}
 		log.Debugf("[real] send a real burst of size %-2d at %v", burstSize + 1, time.Now().Format("15:04:05.000"))
 	} else if netErr, ok := rdErr.(net.Error); ok && netErr.Timeout() {
 		// timeout err
-		burstSize := sampleDummyBurst(nFake, sendChan)
+		var burstSize int
+		burstSize = conn.sampleDummyBurst(nFake, writeChan)
 		// still need to use realfinish signal otherwise the server wound respond with a fake burst
 		// without trying to fetch data from its upstream
-		sendChan <- PacketInfo{pktType: packetTypeRealFinish, data: []byte{}, padLen: maxPacketPaddingLength}
+		writeChan <- PacketInfo{pktType: packetTypeRealFinish, data: []byte{}, padLen: maxPacketPaddingLength}
 		log.Debugf("[timeout] send a fake burst of size %-2d at %v", burstSize + 1, time.Now().Format("15:04:05.000"))
 	} else{
 		// some err

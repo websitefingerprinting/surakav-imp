@@ -4,14 +4,12 @@ const (
 	stateStart = iota
 	stateStop
 	stateStartReady
-	stateStopReady
 )
 
 var stateMap = map[uint32]string {
 	stateStart: "stateStart",
 	stateStop: "stateStop",
 	stateStartReady : "startReady",
-	stateStopReady : "stopReady",
 }
 
 const (

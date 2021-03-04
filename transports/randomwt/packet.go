@@ -30,7 +30,9 @@ package randomwt
 import (
 	"encoding/binary"
 	"fmt"
+	"github.com/websitefingerprinting/wfdef.git/common/log"
 	"io"
+	"sync/atomic"
 	"time"
 
 	"github.com/websitefingerprinting/wfdef.git/common/drbg"
@@ -54,6 +56,8 @@ const (
 	packetTypeFakeFinish
 	packetTypeRealFinish
 	packetTypeTearDown
+	packetTypeSignalStart
+	packetTypeSignalStop
 )
 
 var pktTypeMap = map[uint8]string {
@@ -63,6 +67,8 @@ var pktTypeMap = map[uint8]string {
 	packetTypeFakeFinish:   "FakeFinish",
 	packetTypeRealFinish:   "RealFinish",
 	packetTypeTearDown:     "TearDown",
+	packetTypeSignalStart:  "SigStart",
+	packetTypeSignalStop:   "SigStop",
 }
 
 // InvalidPacketLengthError is the error returned when decodePacket detects a
@@ -183,6 +189,24 @@ func (conn *randomwtConn) readPackets() (err error) {
 			conn.canSendChan <- signalDummy
 		case packetTypeTearDown:
 			conn.canSendChan <- signalTearDown
+		case packetTypeSignalStart:
+			// a signal from client to make server change to stateStart
+			if !conn.isServer {
+				panic(fmt.Sprintf("Client receive SignalStart pkt from server? "))
+			}
+			if atomic.LoadUint32(&conn.state) != stateStart {
+				log.Debugf("[State] Client signal: %s -> %s.", stateMap[atomic.LoadUint32(&conn.state)], stateMap[stateStart])
+				atomic.StoreUint32(&conn.state, stateStart)
+			}
+		case packetTypeSignalStop:
+			// a signal from client to make server change to stateStop
+			if !conn.isServer {
+				panic(fmt.Sprintf("Client receive SignalStop pkt from server? "))
+			}
+			if atomic.LoadUint32(&conn.state) != stateStop{
+				log.Debugf("[State] Client signal: %s -> %s.", stateMap[atomic.LoadUint32(&conn.state)], stateMap[stateStop])
+				atomic.StoreUint32(&conn.state, stateStop)
+			}
 		case packetTypeDummy:
 		default:
 			// Ignore unknown packet types.
