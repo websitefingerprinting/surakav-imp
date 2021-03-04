@@ -613,6 +613,7 @@ func (conn *randomwtConn) ReadFrom(r io.Reader) (written int64, err error) {
 
 	// this go routine regularly checks the real throughput
 	// if it is small, change to stop state
+	// reuse this routine to also check connectivity in case of deadlock
 	go func() {
 		ticker := time.NewTicker(time.Second)
 		defer ticker.Stop()
@@ -624,6 +625,11 @@ func (conn *randomwtConn) ReadFrom(r io.Reader) (written int64, err error) {
 					return
 				}
 			case <- ticker.C:
+				if err := utils.CheckConn(r.(net.Conn)); err != nil {
+					errChan <- err
+					log.Infof("[Routine] connection is lost.")
+					return
+				}
 				//log.Debugf("NRealSeg %v at %v", realNSeg, time.Now().Format("15:04:05.000000"))
 				if !conn.isServer && atomic.LoadUint32(&conn.state) != stateStop && atomic.LoadUint32(&realNSeg) < 2 {
 					// stateStartReady -> stateStop
