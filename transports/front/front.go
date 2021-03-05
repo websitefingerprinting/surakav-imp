@@ -364,9 +364,13 @@ func newfrontClientConn(conn net.Conn, args *frontClientArgs) (c *frontConn, err
 			return nil, err
 		}
 		go func() {
-			log.Noticef("[Routine] gRPC server starts listeners.")
-			server.Serve(listen)
-			log.Noticef("[Routine] gRPC server exits.")
+			defer server.Stop()
+			log.Infof("[Routine] gRPC server starts listeners.")
+			gErr := server.Serve(listen)
+			if gErr != nil {
+				log.Infof("[Routine] gRPC server exits by gErr: %v", gErr)
+				return
+			}
 		}()
 	}
 
@@ -590,12 +594,12 @@ func (conn *frontConn) ReadFrom(r io.Reader) (written int64, err error) {
 	//client side launch trace logger routine
 	if traceLogEnabled && !conn.isServer {
 		go func() {
-			log.Noticef("[Routine] Client traceLogger turns on.")
+			log.Infof("[Routine] Client traceLogger turns on.")
 			for {
 				select {
 				case _, ok := <- closeChan:
 					if !ok {
-						log.Noticef("[Routine] traceLogger exits by closeChan signal.")
+						log.Infof("[Routine] traceLogger exits by closeChan signal.")
 						return
 					}
 				case pktinfo, ok := <- conn.loggerChan:
@@ -615,7 +619,7 @@ func (conn *frontConn) ReadFrom(r io.Reader) (written int64, err error) {
 			select{
 			case _, ok := <- closeChan:
 				if !ok{
-					log.Noticef("[Routine] Send routine exits by closedChan.")
+					log.Infof("[Routine] Send routine exits by closedChan.")
 					return
 				}
 			case packetInfo := <- sendChan:
@@ -631,7 +635,7 @@ func (conn *frontConn) ReadFrom(r io.Reader) (written int64, err error) {
 				_, wtErr := conn.Conn.Write(frameBuf.Bytes())
 				if wtErr != nil {
 					errChan <- wtErr
-					log.Noticef("[Routine] Send routine exits by write err.")
+					log.Infof("[Routine] Send routine exits by write err.")
 					return
 				}
 				if !conn.isServer && traceLogEnabled && conn.logger.logOn.Load().(bool) {
@@ -650,7 +654,7 @@ func (conn *frontConn) ReadFrom(r io.Reader) (written int64, err error) {
 			select{
 			case _, ok := <- closeChan:
 				if !ok{
-					log.Noticef("[Routine] padding factory exits by closedChan.")
+					log.Infof("[Routine] padding factory exits by closedChan.")
 					return
 				}
 			case startPadding := <- conn.paddingChan:
@@ -658,7 +662,7 @@ func (conn *frontConn) ReadFrom(r io.Reader) (written int64, err error) {
 					err := conn.initFrontArgs(maxPaddingN, tsQueue)
 					if err != nil {
 						errChan <- err
-						log.Noticef("[Routine] padding factory exits by err in init.")
+						log.Infof("[Routine] padding factory exits by err in init.")
 						return
 					}
 					frontInitTime.Store(time.Now())
@@ -678,7 +682,7 @@ func (conn *frontConn) ReadFrom(r io.Reader) (written int64, err error) {
 			select {
 			case _, ok := <-closeChan:
 				if !ok {
-					log.Noticef("[Routine] padding routine exits by closedChan.")
+					log.Infof("[Routine] padding routine exits by closedChan.")
 					return
 				}
 			default:
@@ -689,7 +693,7 @@ func (conn *frontConn) ReadFrom(r io.Reader) (written int64, err error) {
 				}
 				timestamp, qErr := tsQueue.DequeueOrWaitForNextElement()
 				if qErr != nil {
-					log.Noticef("[Routine] padding routine exits by dequeue err.")
+					log.Infof("[Routine] padding routine exits by dequeue err.")
 					errChan <- qErr
 					return
 				}
@@ -708,7 +712,7 @@ func (conn *frontConn) ReadFrom(r io.Reader) (written int64, err error) {
 			select{
 			case _, ok := <- closeChan:
 				if !ok {
-					log.Noticef("[Routine] Ticker routine exits by closeChan.")
+					log.Infof("[Routine] Ticker routine exits by closeChan.")
 					return
 				}
 			case <- ticker.C:
@@ -727,13 +731,13 @@ func (conn *frontConn) ReadFrom(r io.Reader) (written int64, err error) {
 	for {
 		select {
 		case conErr := <- errChan:
-			log.Noticef("downstream copy loop terminated at %v. Reason: %v", time.Now().Format("15:04:05.000000"), conErr)
+			log.Infof("downstream copy loop terminated at %v. Reason: %v", time.Now().Format("15:04:05.000000"), conErr)
 			return written, conErr
 		default:
 			buf := make([]byte, 65535)
 			rdLen, err := r.Read(buf[:])
 			if err!= nil {
-				log.Noticef("Exit by read err:%v", err)
+				log.Infof("Exit by read err:%v", err)
 				return written, err
 			}
 			if rdLen > 0 {
@@ -762,7 +766,7 @@ func (conn *frontConn) ReadFrom(r io.Reader) (written int64, err error) {
 				rdLen, rdErr := receiveBuf.Read(payload[:])
 				written += int64(rdLen)
 				if rdErr != nil {
-					log.Noticef("Exit by read buffer err:%v", rdErr)
+					log.Infof("Exit by read buffer err:%v", rdErr)
 					return written, rdErr
 				}
 				sendChan <- PacketInfo{pktType: packetTypePayload, data: payload[:rdLen], padLen: uint16(maxPacketPaddingLength-rdLen)}

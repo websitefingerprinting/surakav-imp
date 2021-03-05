@@ -77,6 +77,7 @@ const (
 
 	maxCloseDelay      = 60
 	maxWaitingTime     = 500 * time.Millisecond
+	aliveCheckingTime  = 5 * time.Second
 
 	gRPCAddr           = "localhost:10086"
 	traceLogEnabled    = true
@@ -351,9 +352,13 @@ func newRandomwtClientConn(conn net.Conn, args *randomwtClientArgs) (c *randomwt
 			return nil, err
 		}
 		go func() {
+			defer server.Stop()
 			log.Infof("[Routine] gRPC server starts listeners.")
-			server.Serve(listen)
-			log.Infof("[Routine] gRPC server exits.")
+			gErr := server.Serve(listen)
+			if gErr != nil {
+				log.Infof("[Routine] gRPC server exits by gErr: %v", gErr)
+				return
+			}
 		}()
 	}
 
@@ -643,6 +648,8 @@ func (conn *randomwtConn) ReadFrom(r io.Reader) (written int64, err error) {
 	}
 
 	var isFakeTurn uint32 = 0
+	isAliveTimer := time.NewTimer(aliveCheckingTime)
+	defer isAliveTimer.Stop()
 	for {
 		select {
 		case conErr := <- errChan:
@@ -650,6 +657,10 @@ func (conn *randomwtConn) ReadFrom(r io.Reader) (written int64, err error) {
 			return written, conErr
 		case signal :=<- conn.canSendChan:
 			log.Debugf("------Enter the send loop------")
+			if !isAliveTimer.Stop() {
+				<- isAliveTimer.C
+			}
+			isAliveTimer.Reset(aliveCheckingTime)
 			if signal == signalTearDown {
 				log.Infof("teardown signal from otherside.")
 				return written, io.EOF
@@ -666,6 +677,12 @@ func (conn *randomwtConn) ReadFrom(r io.Reader) (written int64, err error) {
 			if wErr != nil {
 				return written, wErr
 			}
+		case <- isAliveTimer.C:
+			// to avoid one party hanging over forever when the other side exits unexpectedly
+			// we try break the dead lock by actively sending out a realFinish packet affter waiting for at least `aliveCheckingTime`
+			writeChan <- PacketInfo{pktType: packetTypeRealFinish, data: []byte{}, padLen: maxPacketPaddingLength}
+			log.Warnf("[Event] hang on for at least %v, to avoid dead lock, send finish packet at %v", aliveCheckingTime, time.Now().Format("15:04:05.000000"))
+			isAliveTimer.Reset(aliveCheckingTime)
 		}
 	}
 }
