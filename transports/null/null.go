@@ -152,22 +152,6 @@ func newNullClientConn(conn net.Conn) (c *nullConn, err error) {
 	logger := &traceLogger{gPRCServer: server, logOn: &logOn, logPath: &logPath}
 
 	pb.RegisterTraceLoggingServer(logger.gPRCServer, &traceLoggingServer{callBack:logger.UpdateLogInfo})
-	if traceLogEnabled {
-		listen, err := net.Listen("tcp", gRPCAddr)
-		if err != nil {
-			log.Errorf("Fail to launch gRPC service err: %v", err)
-			return nil, err
-		}
-		go func() {
-			defer server.Stop()
-			log.Infof("[Routine] gRPC server starts listeners.")
-			gErr := server.Serve(listen)
-			if gErr != nil {
-				log.Infof("[Routine] gRPC server exits by gErr: %v", gErr)
-				return
-			}
-		}()
-	}
 
 	// Allocate the client structure.
 	c = &nullConn{conn, false,logger, loggerChan}
@@ -190,13 +174,31 @@ func (conn *nullConn) Read(b []byte) (n int, err error) {
 func (conn *nullConn) ReadFrom(r io.Reader) (written int64, err error) {
 	closeChan := make(chan int)
 	defer close(closeChan)
-	defer conn.logger.gPRCServer.Stop()
 
 	errChan := make(chan error, 5)
 
 
 	//client side launch trace logger routine
 	if traceLogEnabled && !conn.isServer {
+		//start gRPC routine
+		listen, err := net.Listen("tcp", gRPCAddr)
+		if err != nil {
+			log.Errorf("Fail to launch gRPC service err: %v", err)
+			return 0, err
+		}
+		go func() {
+			log.Infof("[Routine] gRPC server starts listeners.")
+			gErr := conn.logger.gPRCServer.Serve(listen)
+			if gErr != nil {
+				log.Infof("[Routine] gRPC server exits by gErr: %v", gErr)
+				errChan <- gErr
+				return
+			} else {
+				log.Infof("[Routine] gRPC server is closed.")
+			}
+		}()
+
+		time.Sleep(50 * time.Millisecond)
 		go func() {
 			log.Infof("[Routine] Client traceLogger turns on.")
 			for {
