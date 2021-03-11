@@ -275,7 +275,7 @@ func (sf *tamarawServerFactory) WrapConn(conn net.Conn) (net.Conn, error) {
 	}
 
 	lenDist := probdist.New(sf.lenSeed, 0, framing.MaximumSegmentLength, false)
-	logger := &traceLogger{gPRCServer: grpc.NewServer(), logOn: nil, logPath: nil}
+	logger := &traceLogger{gRPCServer: grpc.NewServer(), logOn: nil, logPath: nil}
 	// The server's initial state is intentionally set to stateStart at the very beginning to obfuscate the RTT between client and server
 	c := &tamarawConn{conn, true, lenDist,  sf.nSeg, sf.rhoClient, sf.rhoServer, logger, stateStop, nil, bytes.NewBuffer(nil), bytes.NewBuffer(nil), make([]byte, consumeReadSize), nil, nil}
 	log.Debugf("Server pt con status: %v %v %v %v", c.isServer, c.nSeg, c.rhoClient, c.rhoServer)
@@ -333,9 +333,9 @@ func newTamarawClientConn(conn net.Conn, args *tamarawClientArgs) (c *tamarawCon
 	logOn  := atomic.Value{}
 	logOn.Store(false)
 	server := grpc.NewServer()
-	logger := &traceLogger{gPRCServer: server, logOn: &logOn, logPath: &logPath}
+	logger := &traceLogger{gRPCServer: server, logOn: &logOn, logPath: &logPath}
 
-	pb.RegisterTraceLoggingServer(logger.gPRCServer, &traceLoggingServer{callBack:logger.UpdateLogInfo})
+	pb.RegisterTraceLoggingServer(logger.gRPCServer, &traceLoggingServer{callBack:logger.UpdateLogInfo})
 
 	// Allocate the client structure.
 	c = &tamarawConn{conn, false, lenDist, args.nSeg, args.rhoClient, args.rhoServer, logger, stateStop, loggerChan, bytes.NewBuffer(nil), bytes.NewBuffer(nil), make([]byte, consumeReadSize), nil, nil}
@@ -533,7 +533,7 @@ func (conn *tamarawConn) ReadFrom(r io.Reader) (written int64, err error) {
 		}
 		go func() {
 			log.Infof("[Routine] gRPC server starts listeners.")
-			gErr := conn.logger.gPRCServer.Serve(listen)
+			gErr := conn.logger.gRPCServer.Serve(listen)
 			if gErr != nil {
 				log.Infof("[Routine] gRPC server exits by gErr: %v", gErr)
 				errChan <- gErr
@@ -550,7 +550,7 @@ func (conn *tamarawConn) ReadFrom(r io.Reader) (written int64, err error) {
 				select {
 				case _, ok := <- closeChan:
 					if !ok {
-						conn.logger.gPRCServer.Stop()
+						conn.logger.gRPCServer.Stop()
 						log.Infof("[Routine] traceLogger exits by closeChan signal.")
 						return
 					}

@@ -281,7 +281,7 @@ func (sf *randomwtServerFactory) WrapConn(conn net.Conn) (net.Conn, error) {
 	canSendChan := make(chan uint32, 1)
 
 	lenDist := probdist.New(sf.lenSeed, 0, framing.MaximumSegmentLength, false)
-	logger := &traceLogger{gPRCServer: grpc.NewServer(), logOn: nil, logPath: nil}
+	logger := &traceLogger{gRPCServer: grpc.NewServer(), logOn: nil, logPath: nil}
 	// The server's initial state is intentionally set to stateStart at the very beginning to obfuscate the RTT between client and server
 	c := &randomwtConn{conn, true, lenDist,  sf.nClientReal, sf.nServerReal, sf.nClientFake, sf.nServerFake,sf.pFake, logger, stateStop, canSendChan, nil, bytes.NewBuffer(nil), bytes.NewBuffer(nil), make([]byte, consumeReadSize), nil, nil}
 	log.Debugf("Server pt con status: isServer: %v, n-client-real: %d, n-server-real: %d, n-client-fake: %d, n-server-fake: %d, p-fake: %.1f", c.isServer, c.nClientReal, c.nServerReal, c.nClientFake, c.nServerFake, c.pFake)
@@ -342,9 +342,9 @@ func newRandomwtClientConn(conn net.Conn, args *randomwtClientArgs) (c *randomwt
 	logOn  := atomic.Value{}
 	logOn.Store(false)
 	server := grpc.NewServer()
-	logger := &traceLogger{gPRCServer: server, logOn: &logOn, logPath: &logPath}
+	logger := &traceLogger{gRPCServer: server, logOn: &logOn, logPath: &logPath}
 
-	pb.RegisterTraceLoggingServer(logger.gPRCServer, &traceLoggingServer{callBack:logger.UpdateLogInfo})
+	pb.RegisterTraceLoggingServer(logger.gRPCServer, &traceLoggingServer{callBack:logger.UpdateLogInfo})
 	if traceLogEnabled {
 		listen, err := net.Listen("tcp", gRPCAddr)
 		if err != nil {
@@ -547,7 +547,7 @@ func (conn *randomwtConn) ReadFrom(r io.Reader) (written int64, err error) {
 	closeChan := make(chan int)
 	var realNSeg uint32
 	defer close(closeChan)
-	defer conn.logger.gPRCServer.Stop()
+	defer conn.logger.gRPCServer.Stop()
 	defer conn.tearDown()
 
 

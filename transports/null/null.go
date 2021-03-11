@@ -120,7 +120,7 @@ func (sf *nullServerFactory) Args() *pt.Args {
 }
 
 func (sf *nullServerFactory) WrapConn(conn net.Conn) (net.Conn, error) {
-	logger := &traceLogger{gPRCServer: grpc.NewServer(), logOn: nil, logPath: nil}
+	logger := &traceLogger{gRPCServer: grpc.NewServer(), logOn: nil, logPath: nil}
 	// The server's initial state is intentionally set to stateStart at the very beginning to obfuscate the RTT between client and server
 	c := &nullConn{conn, true,  logger, nil}
 
@@ -149,9 +149,9 @@ func newNullClientConn(conn net.Conn) (c *nullConn, err error) {
 	logOn  := atomic.Value{}
 	logOn.Store(false)
 	server := grpc.NewServer()
-	logger := &traceLogger{gPRCServer: server, logOn: &logOn, logPath: &logPath}
+	logger := &traceLogger{gRPCServer: server, logOn: &logOn, logPath: &logPath}
 
-	pb.RegisterTraceLoggingServer(logger.gPRCServer, &traceLoggingServer{callBack:logger.UpdateLogInfo})
+	pb.RegisterTraceLoggingServer(logger.gRPCServer, &traceLoggingServer{callBack:logger.UpdateLogInfo})
 
 	// Allocate the client structure.
 	c = &nullConn{conn, false,logger, loggerChan}
@@ -188,7 +188,7 @@ func (conn *nullConn) ReadFrom(r io.Reader) (written int64, err error) {
 		}
 		go func() {
 			log.Infof("[Routine] gRPC server starts listeners.")
-			gErr := conn.logger.gPRCServer.Serve(listen)
+			gErr := conn.logger.gRPCServer.Serve(listen)
 			if gErr != nil {
 				log.Infof("[Routine] gRPC server exits by gErr: %v", gErr)
 				errChan <- gErr
@@ -205,6 +205,7 @@ func (conn *nullConn) ReadFrom(r io.Reader) (written int64, err error) {
 				select {
 				case _, ok := <- closeChan:
 					if !ok {
+						conn.logger.gRPCServer.Stop()
 						log.Infof("[Routine] traceLogger exits by closeChan signal.")
 						return
 					}

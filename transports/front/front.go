@@ -293,7 +293,7 @@ func (sf *frontServerFactory) WrapConn(conn net.Conn) (net.Conn, error) {
 	paddingChan := make(chan bool)
 
 	lenDist := probdist.New(sf.lenSeed, 0, framing.MaximumSegmentLength, false)
-	logger := &traceLogger{gPRCServer: grpc.NewServer(), logOn: nil, logPath: nil}
+	logger := &traceLogger{gRPCServer: grpc.NewServer(), logOn: nil, logPath: nil}
 	// The server's initial state is intentionally set to stateStart at the very beginning to obfuscate the RTT between client and server
 	c := &frontConn{conn, true, lenDist,  sf.wMin, sf.wMax, sf.nServer, sf.nClient,logger, stateStop, paddingChan, nil, bytes.NewBuffer(nil), bytes.NewBuffer(nil), make([]byte, consumeReadSize), nil, nil}
 	log.Debugf("Server pt con status: isServer: %v, w-min: %.1f, w-max: %.1f, n-server: %d, n-client: %d", c.isServer, c.wMin, c.wMax, c.nServer, c.nClient)
@@ -354,9 +354,9 @@ func newfrontClientConn(conn net.Conn, args *frontClientArgs) (c *frontConn, err
 	logOn  := atomic.Value{}
 	logOn.Store(false)
 	server := grpc.NewServer()
-	logger := &traceLogger{gPRCServer: server, logOn: &logOn, logPath: &logPath}
+	logger := &traceLogger{gRPCServer: server, logOn: &logOn, logPath: &logPath}
 
-	pb.RegisterTraceLoggingServer(logger.gPRCServer, &traceLoggingServer{callBack:logger.UpdateLogInfo})
+	pb.RegisterTraceLoggingServer(logger.gRPCServer, &traceLoggingServer{callBack:logger.UpdateLogInfo})
 	if traceLogEnabled {
 		listen, err := net.Listen("tcp", gRPCAddr)
 		if err != nil {
@@ -574,7 +574,7 @@ func (conn *frontConn) ReadFrom(r io.Reader) (written int64, err error) {
 	log.Debugf("[State] Enter copyloop state: %v (%v is stateStart, %v is statStop)", conn.state, stateStart, stateStop)
 	closeChan := make(chan int)
 	defer close(closeChan)
-	defer conn.logger.gPRCServer.Stop()
+	defer conn.logger.gRPCServer.Stop()
 
 	errChan := make(chan error, 5)  // errors from all the go routines will be sent to this channel
 	sendChan := make(chan PacketInfo, 65535) // all packed packets are sent through this channel

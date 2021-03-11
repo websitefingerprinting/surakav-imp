@@ -33,7 +33,7 @@ func (s *traceLoggingServer) SignalLogger(ctx context.Context, signal *pb.Signal
 
 
 type traceLogger struct {
-	gPRCServer    *grpc.Server
+	gRPCServer    *grpc.Server
 	logOn         *atomic.Value
 	logPath       *atomic.Value
 }
