@@ -345,23 +345,6 @@ func newRandomwtClientConn(conn net.Conn, args *randomwtClientArgs) (c *randomwt
 	logger := &traceLogger{gRPCServer: server, logOn: &logOn, logPath: &logPath}
 
 	pb.RegisterTraceLoggingServer(logger.gRPCServer, &traceLoggingServer{callBack:logger.UpdateLogInfo})
-	if traceLogEnabled {
-		listen, err := net.Listen("tcp", gRPCAddr)
-		if err != nil {
-			log.Errorf("Fail to launch gRPC service err: %v", err)
-			return nil, err
-		}
-		go func() {
-			defer server.Stop()
-			log.Infof("[Routine] gRPC server starts listeners.")
-			gErr := server.Serve(listen)
-			if gErr != nil {
-				log.Infof("[Routine] gRPC server exits by gErr: %v", gErr)
-				return
-			}
-		}()
-	}
-
 	// Allocate the client structure.
 	c = &randomwtConn{conn, false, lenDist, args.nClientReal, args.nServerReal, args.nClientFake, args.nServerFake, args.pFake, logger, stateStop, canSendChan, loggerChan, bytes.NewBuffer(nil), bytes.NewBuffer(nil), make([]byte, consumeReadSize), nil, nil}
 	log.Debugf("Server pt con status: isServer: %v, n-client-real: %d, n-server-real: %d, n-client-fake: %d, n-server-fake: %d, p-fake: %.1f", c.isServer, c.nClientReal, c.nServerReal, c.nClientFake, c.nServerFake, c.pFake)
@@ -547,7 +530,6 @@ func (conn *randomwtConn) ReadFrom(r io.Reader) (written int64, err error) {
 	closeChan := make(chan int)
 	var realNSeg uint32
 	defer close(closeChan)
-	defer conn.logger.gRPCServer.Stop()
 	defer conn.tearDown()
 
 
@@ -556,12 +538,32 @@ func (conn *randomwtConn) ReadFrom(r io.Reader) (written int64, err error) {
 
 	//client side launch trace logger routine
 	if traceLogEnabled && !conn.isServer {
+		//start gRPC routine
+		listen, err := net.Listen("tcp", gRPCAddr)
+		if err != nil {
+			log.Errorf("Fail to launch gRPC service err: %v", err)
+			return 0, err
+		}
+		go func() {
+			log.Infof("[Routine] gRPC server starts listeners.")
+			gErr := conn.logger.gRPCServer.Serve(listen)
+			if gErr != nil {
+				log.Infof("[Routine] gRPC server exits by gErr: %v", gErr)
+				errChan <- gErr
+				return
+			} else {
+				log.Infof("[Routine] gRPC server is closed.")
+			}
+		}()
+
+		time.Sleep(50 * time.Millisecond)
 		go func() {
 			log.Infof("[Routine] Client traceLogger turns on.")
 			for {
 				select {
 				case _, ok := <- closeChan:
 					if !ok {
+						conn.logger.gRPCServer.Stop()
 						log.Infof("[Routine] traceLogger exits by closeChan signal.")
 						return
 					}
