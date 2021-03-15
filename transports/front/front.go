@@ -525,7 +525,7 @@ func (conn *frontConn) Read(b []byte) (n int, err error) {
 }
 
 
-func (conn *frontConn) initFrontArgs(N int, tsQueue *queue.FixedFIFO) (err error){
+func (conn *frontConn) initFrontArgs(N int, tsQueue *queue.FixedFIFO, frontInitTime *atomic.Value) (err error){
 	wSampler := distuv.Uniform{Min: float64(conn.wMin), Max: float64(conn.wMax),
 		Src: expRand.NewSource(uint64(time.Now().UTC().UnixNano()))}
 	n_sampler := distuv.Uniform{Min: 1.0, Max: float64(N),
@@ -544,6 +544,8 @@ func (conn *frontConn) initFrontArgs(N int, tsQueue *queue.FixedFIFO) (err error
 		//empty the queue before refill it
 		_, _ = tsQueue.Dequeue()
 	}
+
+	frontInitTime.Store(time.Now())
 	for i:= 0; i< n_tmp; i++ {
 		err := tsQueue.Enqueue(time.Duration(int64(ts[i] * 1e9)))
 		if err != nil {
@@ -661,13 +663,12 @@ func (conn *frontConn) ReadFrom(r io.Reader) (written int64, err error) {
 				}
 			case startPadding := <- conn.paddingChan:
 				if startPadding {
-					err := conn.initFrontArgs(maxPaddingN, tsQueue)
+					err := conn.initFrontArgs(maxPaddingN, tsQueue, &frontInitTime)
 					if err != nil {
 						errChan <- err
 						log.Infof("[Routine] padding factory exits by err in init.")
 						return
 					}
-					frontInitTime.Store(time.Now())
 					log.Debugf("[Event] Get %v dummy packets to send", tsQueue.GetLen())
 				} else {
 					log.Debugf("[Event] Empty the ts queue (len %v)", tsQueue.GetLen())
