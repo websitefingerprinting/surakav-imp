@@ -532,7 +532,7 @@ func (conn *frontConn) initFrontArgs(N int, tsQueue *queue.FixedFIFO) (err error
 		Src: expRand.NewSource(uint64(time.Now().UTC().UnixNano()))}
 	w_tmp := wSampler.Rand()
 	n_tmp := int(n_sampler.Rand())
-	log.Debugf("[Init] Sampled w: %.2fs, n: %d", w_tmp, n_tmp)
+	log.Infof("[Init] Sampled w: %.2fs, n: %d", w_tmp, n_tmp)
 	tSampler := distuv.Weibull{K: 2, Lambda: math.Sqrt2 * w_tmp,
 		Src: expRand.NewSource(uint64(time.Now().UTC().UnixNano()))}
 	ts := make([]float64, n_tmp)
@@ -554,7 +554,7 @@ func (conn *frontConn) initFrontArgs(N int, tsQueue *queue.FixedFIFO) (err error
 }
 
 func (conn *frontConn) ReadFrom(r io.Reader) (written int64, err error) {
-	log.Debugf("[State] Enter copyloop state: %v (%v is stateStart, %v is statStop)", conn.state, stateStart, stateStop)
+	log.Infof("[State] Enter copyloop state: %v (%v is stateStart, %v is statStop)", conn.state, stateStart, stateStop)
 	closeChan := make(chan int)
 	defer close(closeChan)
 
@@ -720,7 +720,7 @@ func (conn *frontConn) ReadFrom(r io.Reader) (written int64, err error) {
 			case <- ticker.C:
 				//log.Debugf("NRealSeg %v at %v", realNSeg, time.Now().Format("15:04:05.000000"))
 				if !conn.isServer && atomic.LoadUint32(&conn.state) != stateStop && atomic.LoadUint32(&realNSeg) < 2 {
-					log.Debugf("[State] %s -> %s.", stateMap[atomic.LoadUint32(&conn.state)], stateMap[stateStop])
+					log.Infof("[State] %s -> %s.", stateMap[atomic.LoadUint32(&conn.state)], stateMap[stateStop])
 					atomic.StoreUint32(&conn.state, stateStop)
 					sendChan <- PacketInfo{pktType: packetTypeSignalStop, data: []byte{}, padLen: maxPacketPaddingLength}
 					conn.paddingChan <- false
@@ -754,12 +754,12 @@ func (conn *frontConn) ReadFrom(r io.Reader) (written int64, err error) {
 			if !conn.isServer {
 				if (atomic.LoadUint32(&conn.state) == stateStop && rdLen > maxPacketPayloadLength) ||
 					(atomic.LoadUint32(&conn.state) == stateReady) {
-					log.Debugf("[State] %s -> %s.", stateMap[atomic.LoadUint32(&conn.state)], stateMap[stateStart])
+					log.Infof("[State] %s -> %s.", stateMap[atomic.LoadUint32(&conn.state)], stateMap[stateStart])
 					atomic.StoreUint32(&conn.state, stateStart)
 					sendChan <- PacketInfo{pktType: packetTypeSignalStart, data: []byte{}, padLen: maxPacketPaddingLength}
 					conn.paddingChan <- true
 				} else if atomic.LoadUint32(&conn.state) == stateStop {
-					log.Debugf("[State] %s -> %s.", stateMap[stateStop], stateMap[stateReady])
+					log.Infof("[State] %s -> %s.", stateMap[stateStop], stateMap[stateReady])
 					atomic.StoreUint32(&conn.state, stateReady)
 				}
 			}
