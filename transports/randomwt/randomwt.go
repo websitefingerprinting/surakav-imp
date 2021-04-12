@@ -25,7 +25,7 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
-// package randomwt provides an implementation of the Tor Project's randomwt
+// Package randomwt provides an implementation of the Tor Project's randomwt
 // obfuscation protocol.
 package randomwt // import "github.com/websitefingerprinting/wfdef.git/transports/randomwt"
 
@@ -80,7 +80,7 @@ const (
 	aliveCheckingTime  = 5 * time.Second
 
 	gRPCAddr           = "localhost:10086"
-	traceLogEnabled    = true
+	traceLogEnabled    = false
 )
 
 type randomwtClientArgs struct {
@@ -612,6 +612,9 @@ func (conn *randomwtConn) ReadFrom(r io.Reader) (written int64, err error) {
 						// therefore, he can simply always remove the last packet of a burst which is a FakeFinish or RealFinish dummy packet
 						conn.loggerChan <- []int64{time.Now().UnixNano(), int64(len(data)), int64(padLen)}
 					}
+				}
+				if !conn.isServer && pktType != packetTypeFakeFinish && pktType != packetTypeRealFinish {
+					log.Infof("[TRACE_LOG] %d %d %d", time.Now().UnixNano(), int64(len(data)), int64(padLen))
 				}
 				log.Debugf("[Send] %-10s, %-3d+%-3d bytes at %v", pktTypeMap[pktType], len(data), padLen, time.Now().Format("15:04:05.000"))
 			}

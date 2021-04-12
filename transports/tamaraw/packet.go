@@ -161,6 +161,9 @@ func (conn *tamarawConn) readPackets() (err error) {
 		if !conn.isServer && traceLogEnabled && conn.logger.logOn.Load().(bool) && pktType != packetTypePrngSeed{
 			conn.loggerChan <- []int64{time.Now().UnixNano(), -int64(payloadLen), -(int64(decLen - packetOverhead) - int64(payloadLen))}
 		}
+		if !conn.isServer && pktType != packetTypePrngSeed{
+			log.Infof("[TRACE_LOG] %d %d %d", time.Now().UnixNano(),  -int64(payloadLen), -(int64(decLen - packetOverhead) - int64(payloadLen)))
+		}
 
 		switch pktType {
 		case packetTypePayload:

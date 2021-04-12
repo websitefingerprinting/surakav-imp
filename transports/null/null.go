@@ -49,7 +49,7 @@ const (
 	transportName      = "null"
 	maxCloseDelay      = 60
 	gRPCAddr           = "localhost:10086"
-	traceLogEnabled    = true
+	traceLogEnabled    = false
 )
 
 type nullClientArgs struct {
@@ -167,6 +167,9 @@ func (conn *nullConn) Read(b []byte) (n int, err error) {
 	if !conn.isServer && traceLogEnabled && conn.logger.logOn.Load().(bool) {
 		conn.loggerChan <- []int64{time.Now().UnixNano(), -int64(rdLen), 0}
 	}
+	if !conn.isServer{
+		log.Infof("[TRACE_LOG] %d -%d -%d", time.Now().UnixNano(), rdLen, 0)
+	}
 	log.Debugf("[Rcv]  %-8s, %-6d+%d bytes at %v", pktTypeMap[packetTypePayload], -rdLen, 0, time.Now().Format("15:04:05.000"))
 	return rdLen, nil
 }
@@ -240,6 +243,9 @@ func (conn *nullConn) ReadFrom(r io.Reader) (written int64, err error) {
 				}
 				if !conn.isServer && traceLogEnabled && conn.logger.logOn.Load().(bool) {
 					conn.loggerChan <- []int64{time.Now().UnixNano(), int64(rdLen), 0}
+				}
+				if !conn.isServer{
+					log.Infof("[TRACE_LOG] %d %d %d", time.Now().UnixNano(), rdLen, 0)
 				}
 				log.Debugf("[Send] %-8s, %-6d+%d bytes at %v", pktTypeMap[packetTypePayload], rdLen, 0, time.Now().Format("15:04:05.000"))
 			} else {

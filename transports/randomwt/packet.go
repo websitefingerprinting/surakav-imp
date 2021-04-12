@@ -169,6 +169,9 @@ func (conn *randomwtConn) readPackets() (err error) {
 				conn.loggerChan <- []int64{time.Now().UnixNano(), -int64(payloadLen), -(int64(decLen - packetOverhead) - int64(payloadLen))}
 			}
 		}
+		if !conn.isServer && pktType != packetTypeFakeFinish && pktType != packetTypeRealFinish {
+			log.Infof("[TRACE_LOG] %d %d %d", time.Now().UnixNano(), -int64(payloadLen), -(int64(decLen - packetOverhead) - int64(payloadLen)))
+		}
 
 		switch pktType {
 		case packetTypePayload:

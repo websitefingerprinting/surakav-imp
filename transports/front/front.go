@@ -84,7 +84,7 @@ const (
 	tWindow            = 1000 * time.Millisecond
 
 	gRPCAddr           = "localhost:10086"
-	traceLogEnabled    = true
+	traceLogEnabled    = false
 )
 
 type frontClientArgs struct {
@@ -644,6 +644,9 @@ func (conn *frontConn) ReadFrom(r io.Reader) (written int64, err error) {
 				}
 				if !conn.isServer && traceLogEnabled && conn.logger.logOn.Load().(bool) {
 					conn.loggerChan <- []int64{time.Now().UnixNano(), int64(len(data)), int64(padLen)}
+				}
+				if !conn.isServer{
+					log.Infof("[TRACE_LOG] %d %d %d", time.Now().UnixNano(), int64(len(data)), int64(padLen))
 				}
 				log.Debugf("[Send] %-8s, %-3d+ %-3d bytes at %v", pktTypeMap[pktType], len(data), padLen, time.Now().Format("15:04:05.000"))
 			}
