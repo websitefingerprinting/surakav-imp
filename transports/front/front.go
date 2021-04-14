@@ -31,6 +31,7 @@ package front // import "github.com/websitefingerprinting/wfdef.git/transports/f
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	queue "github.com/enriquebris/goconcurrentqueue"
 	"github.com/websitefingerprinting/wfdef.git/common/log"
@@ -697,7 +698,12 @@ func (conn *frontConn) ReadFrom(r io.Reader) (written int64, err error) {
 					time.Sleep(20 * time.Millisecond)
 					continue
 				}
-				timestamp, qErr := tsQueue.DequeueOrWaitForNextElement()
+				ctx, _ := context.WithTimeout(context.Background(), 5*time.Second)
+				timestamp, qErr := tsQueue.DequeueOrWaitForNextElementContext(ctx)
+				if qErr == context.DeadlineExceeded {
+					log.Infof("[Routine] Dequeue timeout after 5 seconds.")
+					continue
+				}
 				if qErr != nil {
 					log.Infof("[Routine] padding routine exits by dequeue err.")
 					errChan <- qErr
@@ -743,7 +749,7 @@ func (conn *frontConn) ReadFrom(r io.Reader) (written int64, err error) {
 			buf := make([]byte, 65535)
 			rdLen, err := r.Read(buf[:])
 			if err!= nil {
-				log.Infof("Exit by read err:%v", err)
+				log.Errorf("Exit by read err:%v", err)
 				return written, err
 			}
 			if rdLen > 0 {
