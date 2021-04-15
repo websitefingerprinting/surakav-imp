@@ -3,6 +3,7 @@ package utils
 import (
 	expRand "golang.org/x/exp/rand"
 	"gonum.org/v1/gonum/stat/distuv"
+	"math/rand"
 	"time"
 )
 
@@ -37,13 +38,16 @@ func Bernoulli(p float64) int {
 	return int(dist.Rand())
 }
 
-func Uniform(min float64, max float64) int {
-	dist := distuv.Uniform{
-		Min: min,
-		Max: max,
-		Src: expRand.NewSource(uint64(time.Now().UTC().UnixNano())),
-	}
-	return int(dist.Rand())
+func Uniform(min int, max int) int {
+	// sample a number between [min, max]
+	r := rand.New(rand.NewSource(time.Now().UnixNano()))
+	return r.Intn(max - min + 1) + min
+	//dist := distuv.Uniform{
+	//	Min: min,
+	//	Max: max,
+	//	Src: expRand.NewSource(uint64(time.Now().UTC().UnixNano())),
+	//}
+	//return int(dist.Rand())
 }
 
 
