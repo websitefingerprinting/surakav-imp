@@ -199,7 +199,7 @@ func serverStateFromJSONServerState(stateDir string, js *jsonServerState) (*rand
 		return nil, err
 	}
 
-	if (js.NClientReal <= 0) || (js.NServerReal <= 0) || (js.NClientFake <= 0) || (js.NServerFake <= 0) {
+	if (js.NClientReal < 0) || (js.NServerReal < 0) || (js.NClientFake < 0) || (js.NServerFake < 0) {
 		return nil, fmt.Errorf("invalid n-client-real '%d' or n-server-real '%d' or n-client-fake '%d' or n-server-fake '%d'",
 			js.NClientReal, js.NServerReal, js.NClientFake, js.NServerFake)
 	}
