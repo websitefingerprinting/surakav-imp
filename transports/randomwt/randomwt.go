@@ -637,7 +637,7 @@ func (conn *randomwtConn) ReadFrom(r io.Reader) (written int64, err error) {
 				//log.Debugf("NRealSeg %v at %v", realNSeg, time.Now().Format("15:04:05.000000"))
 				if !conn.isServer && atomic.LoadUint32(&conn.state) != stateStop && atomic.LoadUint32(&realNSeg) < 2 {
 					// stateStartReady -> stateStop
-					// stateSart -> stateStop
+					// stateStart -> stateStop
 					writeChan <- PacketInfo{pktType: packetTypeSignalStop, data: []byte{}, padLen: maxPacketPaddingLength}
 					log.Debugf("[State] %s -> %s.", stateMap[atomic.LoadUint32(&conn.state)], stateMap[stateStop])
 					atomic.StoreUint32(&conn.state, stateStop)
