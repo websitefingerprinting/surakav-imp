@@ -10,7 +10,7 @@ The workflow of WFDefProxy is shown in the figure below:
 <img src="https://anonymous.4open.science/r/wfdef-11EF/imgs/wfdefproxy.png" style="zoom:50%;" />
 </div>
 
-##Table of Contents
+## Table of Contents
 - [How to use?](#how-to-use-)
     * [To build:](#to-build-)
     * [To run **FRONT**](#to-run---front--)
