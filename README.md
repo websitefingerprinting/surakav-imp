@@ -7,7 +7,7 @@ It transforms the traffic between the client and the bridge according to a defen
 It makes use of the cryptographic system of obfs4 to do the handshake as well as to encrypt/decrypt the packets.
 The workflow of WFDefProxy is shown in the figure below:
 <div  align="center"> 
-<img src="./imgs/wfdefproxy.png" style="zoom:40%;" />
+<img src="./imgs/wfdefproxy.png" style="zoom:30%;" />
 </div>
 
 ## Table of Contents
@@ -187,7 +187,7 @@ To implement a transport (defense), we MUST have two core functions
     ```
     When received a message with `turnOn=true`, WFDefProxy will log the packet information (timestamp, direction and size) to `filePath`.
     When received a message with `turnOn=false`, WFDefProxy will stop logging.
-* WFDefProxy can be used together with AlexaCrawler, the toolkit we developed for crawling and parse traces.
+* WFDefProxy can be used together with AlexaCrawler, the toolkit we developed for crawling and parsing traces.
 
 </span>
 
