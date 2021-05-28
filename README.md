@@ -1,6 +1,6 @@
 # WFDefProxy
 
-##What?
+## What?
 WFDefProxy implements three defenses against Website Fingerprinting (WF) attack: FRONT [1], Tamaraw [2] and Random-WT [3]. 
 It extends obfs4proxy [4], the state-of-the-art pluggable transport for Tor to circumvent censorship. 
 It transforms the traffic between the client and the bridge according to a defense's protocol.
