@@ -187,7 +187,7 @@ To implement a transport (defense), we MUST have two core functions
     ```
     When received a message with `turnOn=true`, WFDefProxy will log the packet information (timestamp, direction and size) to `filePath`.
     When received a message with `turnOn=false`, WFDefProxy will stop logging.
-* WFDefProxy can be used together with AlexaCrawler, the toolkit we developed for crawling and parsing traces.
+* WFDefProxy can be used together with [WFCrawler](https://github.com/websitefingerprinting/WFCrawler), the toolkit we developed for crawling and parsing traces.
 
 </span>
 
