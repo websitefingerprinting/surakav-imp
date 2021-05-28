@@ -1,32 +1,103 @@
-## obfs4 - The obfourscator
-#### Yawning Angel (yawning at schwanenlied dot me)
+## WFDefProxy
 
 ### What?
+WFDefProxy implements three defenses against Website Fingerprinting (WF) attack: FRONT, Tamaraw and Random-WT. 
+It extends obfs4proxy [1], the state-of-the-art pluggable transport for Tor to circumvent censorship. 
+It transforms the traffic between the client and the bridge according to a defense's protocol.
+It makes use of the cryptographic system of obfs4 to do the handshake as well as to encrypt/decrypt the packets.
+The workflow of WFDefProxy is shown in the figure below:
+<div  align="center"> 
+<img src="https://anonymous.4open.science/r/wfdef-11EF/imgs/wfdefproxy.png" style="zoom:50%;" />
+</div>
 
-This is a look-like nothing obfuscation protocol that incorporates ideas and
-concepts from Philipp Winter's ScrambleSuit protocol.  The obfs naming was
-chosen primarily because it was shorter, in terms of protocol ancestery obfs4
-is much closer to ScrambleSuit than obfs2/obfs3.
+### How to use? 
+####  To build:
 
-The notable differences between ScrambleSuit and obfs4:
+```go build -o obfs4proxy/obfs4proxy ./obfs4proxy```
 
- * The handshake always does a full key exchange (no such thing as a Session
-   Ticket Handshake).
- * The handshake uses the Tor Project's ntor handshake with public keys
-   obfuscated via the Elligator 2 mapping.
- * The link layer encryption uses NaCl secret boxes (Poly1305/XSalsa20).
+Suppose we put the compiled binary at `/Users/example/wfdef/obfs4proxy/obfs4proxy`.
 
-As an added bonus, obfs4proxy also supports acting as an obfs2/3 client and
-bridge to ease the transition to the new protocol.
+#### 1. To run a bridge with **FRONT**, the torrc configuration is like:
+```
+# Feel free to adapt the path.
+DataDirectory /Users/example/tor-config/log-front-server  
+Log notice stdout    
+SOCKSPort 9052    
+AssumeReachable 1    
+PublishServerDescriptor 0    
+Exitpolicy reject *:*    
+ORPort auto   
+ExtORPort auto
+Nickname "wfdef"    
+BridgeRelay 1    
+ServerTransportListenAddr front 0.0.0.0:34000
+ServerTransportPlugin front exec /Users/example/wfdef/obfs4proxy/obfs4proxy
+ServerTransportOptions front w-min=1 w-max=13 n-client=3000 n-server=3000
+```
+It will generate a `front_bridgeline.txt` in `/Users/example/tor-config/log-front-server/pt_state`, 
+containing a certification used for handshake as well as the configured parameters. 
 
-### Why not extend ScrambleSuit?
+The client's torrc file is like:
+```
+DataDirectory /Users/example/tor-config/log-front-client 
+Log notice stdout    
+SOCKSPort 9050  
+ControlPort 9051  
+UseBridges 1    
+Bridge front 127.0.0.1:34000 cert=VdXiHCbwjXAC3+M2VZwasp+TAIbK0TuQD3MG3s024pE3brEygUOovIJo4f2oxZpBvlrNFQ w-min=1.0 w-max=13.0 n-server=3000 n-client=3000
+ClientTransportPlugin front exec /Users/example/wfdef/obfs4proxy/obfs4proxy
+```
 
-It's my protocol and I'll obfuscate if I want to.
+You can launch Tor with command line `tor -f client-torrc` or replace Tor Browser's torrc file with it and launch the Tor Browser directly. 
+Note that if is better to also include the relay's fingerprint in `Bridge` option due to some bugs of Tor Browser that may cause the launch failure.
 
-Since a lot of the changes are to the handshaking process, it didn't make sense
-to extend ScrambleSuit as writing a server implementation that supported both
-handshake variants without being obscenely slow is non-trivial.
+#### 2. To run **Tamaraw**, the torrc for bridge is similar as FRONT, except that last two lines should be 
+```
+ServerTransportPlugin tamaraw exec /Users/example/wfdef/obfs4proxy/obfs4proxy
+ServerTransportOptions tamaraw rho-client=12 rho-server=4 nseg=200
+```
+Also, on the client side, the last two lines of the torrc file should be
+```
+Bridge front 127.0.0.1:34000 cert=VdXiHCbwjXAC3+M2VZwasp+TAIbK0TuQD3MG3s024pE3brEygUOovIJo4f2oxZpBvlrNFQ rho-client=12 rho-server=4 nseg=200
+ClientTransportPlugin front exec /Users/example/wfdef/obfs4proxy/obfs4proxy
+```
+Replace `Bridge` with the information in `tamaraw_bridgeline.txt` in `/Users/example/tor-config/log-front-server/pt_state`.
 
+#### 3. To run **Random-WT**, the last two lines of torrc file for bridge:
+```
+ServerTransportPlugin randomwt exec /Users/example/wfdef/obfs4proxy/obfs4proxy
+ServerTransportOptions randomwt n-client-real=4 n-server-real=45 n-client-fake=8 n-server-fake=90 p-fake=0.4
+```
+Similarly, the client side 
+```
+Bridge randomwt 127.0.0.1:34000 cert=VdXiHCbwjXAC3+M2VZwasp+TAIbK0TuQD3MG3s024pE3brEygUOovIJo4f2oxZpBvlrNFQ n-client-real=4 n-server-real=45 n-client-fake=8 n-server-fake=90 p-fake=0.4
+ClientTransportPlugin randomwt exec /Users/example/wfdef/obfs4proxy/obfs4proxy
+```
+
+### How does WFDefProxy work?
+We nearly keep the framework of obfs4proxy unchanged, except that we add four different transports in `./transports`:
+* **null**: do nothing but forward the packets between client and the bridge, can be used for collecting undefended datasets
+* **front**: implement FRONT defense
+* **tamaraw**: implement tamaraw defense
+* **random-wt**: implement random-wt defense
+
+The key modules for each transport:
+* `packet.go`: define the packet format, the types of packets and how to parse the packets
+* `statefile.go`: define the parameters, validity checks for the parameter values and the format of bridgeline.txt
+* `[defense].go`: implement the defense, control the state transitions
+*  `state.go`: define the states of the defense
+
+Below are the state machines for three defenses.
+<div  align="center"> 
+<img src="https://anonymous.4open.science/r/wfdef-11EF/imgs/front-fsm.png" style="zoom:50%;" />
+<img src="https://anonymous.4open.science/r/wfdef-11EF/imgs/tamaraw-fsm.png" style="zoom:50%;" />
+<img src="https://anonymous.4open.science/r/wfdef-11EF/imgs/randomwt-fsm.png" style="zoom:50%;" />
+</div>
+
+
+
+### Tips and tricks
+ * 
 ### Dependencies
 
 Build time library dependencies are handled by the Go module automatically.
@@ -35,62 +106,9 @@ If you are on Go versions earlier than 1.11, you might need to run `go get -d
 ./...` to download all the dependencies. Note however, that modules always use
 the same dependency versions, while `go get -d` always downloads master.
 
- * Go 1.11.0 or later. Patches to support up to 2 prior major releases will
-   be accepted if they are not overly intrusive and well written.
- * See `go.mod`, `go.sum` and `go list -m -u all` for build time dependencies.
-
-### Installation
-
-To build:
-
-	`go build -o obfs4proxy/obfs4proxy ./obfs4proxy`
-
-To install, copy `./obfs4proxy/obfsproxy` to a permanent location
-(Eg: `/usr/local/bin`)
-
-Client side torrc configuration:
-```
-ClientTransportPlugin obfs4 exec /usr/local/bin/obfs4proxy
-```
-
-Bridge side torrc configuration:
-```
-# Act as a bridge relay.
-BridgeRelay 1
-
-# Enable the Extended ORPort
-ExtORPort auto
-
-# Use obfs4proxy to provide the obfs4 protocol.
-ServerTransportPlugin obfs4 exec /usr/local/bin/obfs4proxy
-
-# (Optional) Listen on the specified address/port for obfs4 connections as
-# opposed to picking a port automatically.
-#ServerTransportListenAddr obfs4 0.0.0.0:443
-```
-
-### Tips and tricks
-
- * On modern Linux systems it is possible to have obfs4proxy bind to reserved
-   ports (<=1024) even when not running as root by granting the
-   `CAP_NET_BIND_SERVICE` capability with setcap:
-
-   `# setcap 'cap_net_bind_service=+ep' /usr/local/bin/obfs4proxy`
-
- * obfs4proxy can also act as an obfs2 and obfs3 client or server.  Adjust the
-   `ClientTransportPlugin` and `ServerTransportPlugin` lines in the torrc as
-   appropriate.
-
- * obfs4proxy can also act as a ScrambleSuit client.  Adjust the
-   `ClientTransportPlugin` line in the torrc as appropriate.
-
- * The autogenerated obfs4 bridge parameters are placed in
-   `DataDir/pt_state/obfs4_state.json`.  To ease deployment, the client side
-   bridge line is written to `DataDir/pt_state/obfs4_bridgeline.txt`.
+* Go 1.11.0 or later. Patches to support up to 2 prior major releases will
+  be accepted if they are not overly intrusive and well written.
+* See `go.mod`, `go.sum` and `go list -m -u all` for build time dependencies.
 
 ### Thanks
-
- * David Fifield for goptlib.
- * Adam Langley for his Elligator implementation.
- * Philipp Winter for the ScrambleSuit protocol which provided much of the
-   design.
+ * Yawning Angel for explaining the code of obfs4proxy
