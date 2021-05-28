@@ -38,7 +38,7 @@ Suppose we put the compiled binary at `/Users/example/wfdef/obfs4proxy/obfs4prox
 
 <span id="to-run---front--">
 
-###To run FRONT
+### To run FRONT
 The torrc configuration of bridge is like:
 ```
 # Feel free to adapt the path.
@@ -77,7 +77,7 @@ Note that if is better to also include the relay's fingerprint in `Bridge` optio
 
 <span id="to-run---tamaraw--">
 
-###To run Tamaraw 
+### To run Tamaraw 
 The torrc for bridge is similar as FRONT, except that last two lines should be 
 ```
 ServerTransportPlugin tamaraw exec /Users/example/wfdef/obfs4proxy/obfs4proxy
@@ -94,7 +94,7 @@ Replace `Bridge` with the information in `tamaraw_bridgeline.txt` in `/Users/exa
 
 <span id="to-run---random-wt--">
 
-###To run Random-WT
+### To run Random-WT
 The last two lines of torrc file for bridge:
 ```
 ServerTransportPlugin randomwt exec /Users/example/wfdef/obfs4proxy/obfs4proxy
@@ -111,11 +111,11 @@ ClientTransportPlugin randomwt exec /Users/example/wfdef/obfs4proxy/obfs4proxy
 
 <span id="how-does-wfdefproxy-work-">
 
-##How does WFDefProxy work?
+## How does WFDefProxy work?
 
 <span id="overview">
 
-###Overview
+### Overview
 We nearly keep the framework of obfs4proxy unchanged, except that we add four different transports in `./transports`:
 * **null**: do nothing but forward the packets between client and the bridge, can be used for collecting undefended datasets
 * **front**: implement FRONT defense
@@ -132,7 +132,7 @@ The key modules for each transport:
 
 <span id="finite-state-machine">
 
-###Finite State Machine
+### Finite State Machine
 Below are the state machines for three defenses on the client side (1.FRONT 2.Tamaraw 3.Random-WT).
 <div  align="center"> 
 <img src="https://anonymous.4open.science/r/wfdef-11EF/imgs/front-fsm.png" style="zoom:50%;" />
@@ -152,7 +152,7 @@ When client turns on/off the defense, it will send a signal packet to the bridge
 
 <span id="core-functions">
 
-###Core functions
+### Core functions
 To implement a transport (defense), we MUST have two core functions
 * `func (conn *someDefenseConn) ReadFrom(r io.Reader) (written int64, err error)`:
   this function intercepts data from Tor, modifies the data according to the defense and forwards to the WFDefProxy on the other side.
@@ -165,7 +165,7 @@ To implement a transport (defense), we MUST have two core functions
 
 <span id="tips-and-tricks">
 
-##Tips and tricks
+## Tips and tricks
 * There are two ways to get the trace via WFDefProxy: 
   * The first one is to simply add some logs about the time and bytes of the packets sent or received near the `conn.Write` or `Read` function. I have written some. 
    The logs can be found at `/Users/example/tor-config/log-[defense]-client/pt_state/obfs4proxy.log`.
@@ -191,7 +191,7 @@ To implement a transport (defense), we MUST have two core functions
 
 </span>
 
-##Dependencies
+## Dependencies
 
 Build time library dependencies are handled by the Go module automatically.
 
@@ -203,7 +203,7 @@ the same dependency versions, while `go get -d` always downloads master.
   be accepted if they are not overly intrusive and well written.
 * See `go.mod`, `go.sum` and `go list -m -u all` for build time dependencies.
 
-##References
+## References
 [1] [Gong, Jiajun, and Tao Wang. "Zero-delay Lightweight Defenses against Website Fingerprinting." 29th USENIX Security Symposium. 2020.](https://www.usenix.org/system/files/sec20-gong.pdf)
 
 [2] [Cai, Xiang, et al. "A Systematic Approach to Developing and Evaluating Website Fingerprinting Defenses." Proceedings of the 2014 ACM SIGSAC Conference on Computer and Communications Security. 2014.](https://dl.acm.org/doi/pdf/10.1145/2660267.2660362)
@@ -212,11 +212,11 @@ the same dependency versions, while `go get -d` always downloads master.
 
 [4] [Yawning, Angel. "obfs4 - The obfourscator"](https://github.com/Yawning/obfs4)
 
-##Disclaimer
+## Disclaimer
 This repository is only intended for research purpose. 
 Codes may have bugs.
 We do not guarantee it secure against any attacker in the real world. 
 Please be cautious if you want to use it in the real Tor network.
 
-##Thanks
+## Thanks
  * Yawning Angel for explaining the code of obfs4proxy
