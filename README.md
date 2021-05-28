@@ -7,7 +7,7 @@ It transforms the traffic between the client and the bridge according to a defen
 It makes use of the cryptographic system of obfs4 to do the handshake as well as to encrypt/decrypt the packets.
 The workflow of WFDefProxy is shown in the figure below:
 <div  align="center"> 
-<img src="https://anonymous.4open.science/r/wfdef-11EF/imgs/wfdefproxy.png" style="zoom:50%;" />
+<img src="./imgs/wfdefproxy.png" style="zoom:50%;" />
 </div>
 
 ## Table of Contents
