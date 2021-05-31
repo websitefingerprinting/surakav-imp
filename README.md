@@ -7,7 +7,7 @@ It transforms the traffic between the client and the bridge according to a defen
 It makes use of the cryptographic system of obfs4 to do the handshake as well as to encrypt/decrypt the packets.
 The workflow of WFDefProxy is shown in the figure below:
 <div  align="center"> 
-<img src="./imgs/wfdefproxy.png" style="zoom:30%;" />
+<img src="./imgs/wfdefproxy.png" style="zoom:20%;" />
 </div>
 
 ## Table of Contents
@@ -135,9 +135,9 @@ The key modules for each transport:
 ### Finite State Machine
 Below are the state machines for three defenses on the client side (1.FRONT 2.Tamaraw 3.Random-WT).
 <div  align="center"> 
-<img src="./imgs/front-fsm.png" style="zoom:50%;" />
-<img src="./imgs/tamaraw-fsm.png" style="zoom:50%;" />
-<img src="./imgs/randomwt-fsm.png" style="zoom:50%;" />
+<img src="./imgs/front-fsm.png" style="zoom:33%;" />
+<img src="./imgs/tamaraw-fsm.png" style="zoom:33%;" />
+<img src="./imgs/randomwt-fsm.png" style="zoom:33%;" />
 </div>
 
 The start and end of a defense is controlled by a finite state machine, where a event will trigger some actions and state transition.
