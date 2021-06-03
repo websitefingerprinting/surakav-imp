@@ -20,6 +20,7 @@ The workflow of WFDefProxy is shown in the figure below:
     * [Overview](#overview)
     * [Finite State Machine](#finite-state-machine)
     * [Core functions](#core-functions)
+- [To implement other defenses?](#to-implement-other-defenses)
 - [Tips and tricks](#tips-and-tricks)
 
 <span id="how-to-use-">
@@ -162,6 +163,24 @@ To implement a transport (defense), we MUST have two core functions
 </span>
 
 </span>
+
+
+<span id="to-implement-other-defenses">
+
+## To implement other defenses
+If you want to implement a new defense on WFDefProxy, there are two main steps to follow:
+1. In WFDefProxy, a defense protocol is referred to as a "transport". 
+   `transports/base/base.go` defines the template for a transport.
+   You should implement all the interfaces in your defense.
+2. Rigister your transport (defense) in `transports/transports.go` (See `func Init() error`).
+3. Some suggestion on the implementation:
+    * Write a `statefile.go` to deal with arguments of a defense. 
+    * Write a `packet.go` which defines the packet format and the function of parsing the packets from the other side.
+    * For the defense, you should define a new connection type which extends `net.Conn`. Therefore, you should implement `Write` and `Read` function for the transport. 
+    These two functions will automatically be called in the main programme `obfs4proxy/obfs4proxy.go` (See Line 270 `copyLoop(a net.Conn, b net.Conn) error`).
+
+</span>
+
 
 <span id="tips-and-tricks">
 
