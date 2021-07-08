@@ -4,7 +4,8 @@ import (
 	"bufio"
 	"fmt"
 	pt "git.torproject.org/pluggable-transports/goptlib.git"
-	"log"
+	"github.com/websitefingerprinting/wfdef.git/common/log"
+	//"log"
 	"math"
 	"math/rand"
 	"os"
@@ -53,18 +54,20 @@ func ParseArgByKey(args *pt.Args, key string, kind string) (interface{}, error) 
 func ReadFloatFromFile(fdir string) []float64{
 	file, err := os.Open(fdir)
 	if err != nil {
-		log.Fatal(err)
+		log.Errorf("[ERR] Fail to open file: %v", err)
 	}
 	defer file.Close()
 	var arr []float64
 	scanner := bufio.NewScanner(file)
+	startTime := time.Now()
 	for scanner.Scan() {
 		lineStr := scanner.Text()
 		num, sErr := strconv.ParseFloat(lineStr, 64)
-		if sErr != nil {
+		if sErr == nil {
 			arr = append(arr,num)
 		}
 	}
+	log.Debugf("Successfully loading %v ipt info in %v", len(arr), time.Since(startTime))
 	return arr
 }
 
@@ -81,7 +84,7 @@ func SampleIPT(arr []float64) int{
 		//negative ipt
 		res = 0
 	} else if res > 500 {
-		// ipt > 1s
+		// ipt > 0.5s
 		res = 500
 	}
 	return int(res)

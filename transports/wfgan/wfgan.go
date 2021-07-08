@@ -35,6 +35,7 @@ import (
 	"errors"
 	"fmt"
 	pt "git.torproject.org/pluggable-transports/goptlib.git"
+	queue "github.com/enriquebris/goconcurrentqueue"
 	"github.com/websitefingerprinting/wfdef.git/common/log"
 	"github.com/websitefingerprinting/wfdef.git/common/ntor"
 	"github.com/websitefingerprinting/wfdef.git/common/probdist"
@@ -83,7 +84,7 @@ const (
 	gRPCAddr           = "localhost:9999"
 	iptRelPath         = "../transports/wfgan/grpc/time_feature_0-100x0-1000_o2o.ipt"  //relative to wfdef/obfs4proxy
 
-	logEnabled         = false
+	logEnabled         = true
 )
 
 type wfganClientArgs struct {
@@ -488,7 +489,7 @@ func (conn *wfganConn) ReadFrom(r io.Reader) (written int64, err error) {
 
 	var realNSeg uint32 = 0  // real packet counter over tWindow second
 	var receiveBuf bytes.Buffer //read payload from upstream and buffer here
-	burstQueue := make(chan rrTuple, maxQueueSize) // maintain a queue of burst seqs
+	var burstQueue = queue.NewFixedFIFO(maxQueueSize)// maintain a queue of burst seqs
 
 	//create a go routine to send out packets to the wire
 	go func() {
@@ -515,7 +516,9 @@ func (conn *wfganConn) ReadFrom(r io.Reader) (written int64, err error) {
 					log.Infof("[Routine] Send routine exits by write err.")
 					return
 				}
-				if !conn.isServer && logEnabled{
+				if !conn.isServer && logEnabled && pktType != packetTypeFinish {
+					// since it is very trivial to remove the finish packet for an attacker
+					// (i.e., the last packet of each burst), there is no need to log this packet
 					log.Infof("[TRACE_LOG] %d %d %d", time.Now().UnixNano(), int64(len(data)), int64(padLen))
 				}
 				//log.Debugf("[Send] %-8s, %-3d+ %-3d bytes at %v", pktTypeMap[pktType], len(data), padLen, time.Now().Format("15:04:05.000000"))
@@ -540,7 +543,6 @@ func (conn *wfganConn) ReadFrom(r io.Reader) (written int64, err error) {
 					conn, err := grpc.DialContext(ctx, gRPCAddr, grpc.WithInsecure(), grpc.WithBlock())
 					if err != nil {
 						log.Errorf("[gRPC] Cannot connect to py server. Exit the program.")
-						close(burstQueue)
 						errChan <- err
 						return
 					}
@@ -552,28 +554,30 @@ func (conn *wfganConn) ReadFrom(r io.Reader) (written int64, err error) {
 						log.Errorf("[gRPC] Error in request %v",err)
 					}
 					_  = conn.Close()
-					log.Debugf("[gRPC] Before: Refill queue (size %v) with %v elements at %v", len(burstQueue), len(resp.Packets)/2, time.Now().Format("15:04:05.000000"))
+					log.Debugf("[gRPC] Before: Refill queue (size %v) with %v elements at %v", burstQueue.GetLen(), len(resp.Packets)/2, time.Now().Format("15:04:05.000000"))
 					for i := 0; i < len(resp.Packets) - 1; i += 2 {
-						burstQueue <- rrTuple{request: resp.Packets[i], response: resp.Packets[i+1]}
+						qerr := burstQueue.Enqueue(rrTuple{request: resp.Packets[i], response: resp.Packets[i+1]})
+						if qerr != nil {
+							log.Errorf("[gRPC] Error happened when enqueue: %v", qerr)
+							break
+						}
 					}
-					log.Debugf("[gRPC] After: Refilled queue (size %v) with %v elements at %v", len(burstQueue), len(resp.Packets)/2, time.Now().Format("15:04:05.000000"))
+					log.Debugf("[gRPC] After: Refilled queue (size %v) with %v elements at %v", burstQueue.GetLen(), len(resp.Packets)/2, time.Now().Format("15:04:05.000000"))
 				} else {
 					if !conn.isServer && atomic.LoadUint32(&conn.state) != stateStart {
-						log.Debugf("[Event] Empty the queue (len %v)", len(burstQueue))
-						for len(burstQueue) > 0 {
-							_, ok := <- burstQueue //TODO
-							if !ok {
-								log.Errorf("[Routine] burstqueue is closed. Exit the routine.")
-								return
+						log.Debugf("[Event] Empty the queue (len %v)", burstQueue.GetLen())
+						for {
+							_, qerr := burstQueue.Dequeue()
+							if qerr != nil {
+								break
 							}
 						}
-						log.Debugf("[Event] queue emptied.")
 					}
 				}
 			default:
 				//client, defense on
 				// if the capacity of burstQueue is small, refill the queue
-				capacity := float64(len(burstQueue)) / float64(maxQueueSize)
+				capacity := float64(burstQueue.GetLen()) / float64(maxQueueSize)
 				if !conn.isServer && atomic.LoadUint32(&conn.state) == stateStart && capacity < 0.1 {
 					log.Debugf("[Event] Low queue capacity %.2f, triggering refill event at %v", capacity, time.Now().Format("15:04:05.000000"))
 					refillChan <- true
@@ -597,7 +601,9 @@ func (conn *wfganConn) ReadFrom(r io.Reader) (written int64, err error) {
 					return
 				}
 			case <- ticker.C:
-				log.Debugf("[Event] NRealSeg %v at %v", realNSeg, time.Now().Format("15:04:05.000000"))
+				if !conn.isServer {
+					log.Debugf("[Event] NRealSeg %v at %v", realNSeg, time.Now().Format("15:04:05.000000"))
+				}
 				if !conn.isServer && atomic.LoadUint32(&conn.state) != stateStop && atomic.LoadUint32(&realNSeg) < 2 {
 					log.Infof("[State] %s -> %s at %v.", stateMap[atomic.LoadUint32(&conn.state)], stateMap[stateStop], time.Now().Format("15:04:05.000000"))
 					atomic.StoreUint32(&conn.state, stateStop)
@@ -679,19 +685,14 @@ func (conn *wfganConn) ReadFrom(r io.Reader) (written int64, err error) {
 					utils.SleepRho(time.Now(), ipt)
 					log.Debugf("[Event] Finish sleep at %v", time.Now().Format("15:04:05.000000"))
 
-					//TODO
-					if atomic.LoadUint32(&conn.state) != stateStart {
-						//avoid deadlock
-						break
-					}
-					burstTuple, ok := <- burstQueue
-					if !ok {
-						log.Errorf("[Event] main loop: BurstQueue is closed. Exit the programe.")
+					burstTuple, qerr := burstQueue.Dequeue()
+					if qerr != nil {
+						log.Warnf("[Event] Potential data race in the main loop: %v", qerr)
 						break
 					}
 					log.Debugf("[Event] Sample a burst tuple: %v", burstTuple)
-					requestSize := burstTuple.request
-					responseSize := burstTuple.response
+					requestSize := burstTuple.(rrTuple).request
+					responseSize := burstTuple.(rrTuple).response
 					realNSegTmp, writtenTmp := sendRefBurst(uint32(requestSize), conn.tol, &receiveBuf, sendChan)
 					atomic.AddUint32(&realNSeg, realNSegTmp)
 					written += writtenTmp
@@ -719,7 +720,6 @@ func (conn *wfganConn) sampleIPT() (ipt time.Duration, err error) {
 	if len(conn.iptList) == 0 {
 		return time.Duration(0), errors.New("the ipt list is empty or nil")
 	}
-	//TODO: modify the ipt file for our new experiment
 	return time.Duration(utils.SampleIPT(conn.iptList)) * time.Millisecond, nil
 }
 
