@@ -1,11 +1,16 @@
 package utils
 
 import (
+	"bufio"
 	"fmt"
 	pt "git.torproject.org/pluggable-transports/goptlib.git"
+	"log"
+	"math"
+	"math/rand"
+	"os"
 	"strconv"
-	"time"
 	"strings"
+	"time"
 )
 
 func SleepRho(lastSend time.Time, rho time.Duration)  {
@@ -42,4 +47,42 @@ func ParseArgByKey(args *pt.Args, key string, kind string) (interface{}, error) 
 		return arg, nil
 	}
 	return nil, fmt.Errorf("wrong kind: '%s'", kind)
+}
+
+
+func ReadFloatFromFile(fdir string) []float64{
+	file, err := os.Open(fdir)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer file.Close()
+	var arr []float64
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		lineStr := scanner.Text()
+		num, sErr := strconv.ParseFloat(lineStr, 64)
+		if sErr != nil {
+			arr = append(arr,num)
+		}
+	}
+	return arr
+}
+
+
+func SampleIPT(arr []float64) int{
+	r := rand.New(rand.NewSource(time.Now().UnixNano()))
+	std := arr[0]
+	l := len(arr) -1
+	ind := r.Intn(l) + 1
+	res := arr[ind] + r.NormFloat64()*std
+	res = math.Pow(10, res)
+	res *= 1000  // seconds to milliseconds
+	if res < 0 {
+		//negative ipt
+		res = 0
+	} else if res > 500 {
+		// ipt > 1s
+		res = 500
+	}
+	return int(res)
 }
