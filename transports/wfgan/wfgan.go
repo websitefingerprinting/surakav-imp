@@ -504,19 +504,19 @@ func (conn *wfganConn) ReadFrom(r io.Reader) (written int64, err error) {
 				pktType := packetInfo.pktType
 				data    := packetInfo.data
 				padLen  := packetInfo.padLen
+
+				var capacity int
+				capacity, _ = utils.EstimateTCPCapacity(conn.Conn)
+				for capacity <= maxPacketPayloadLength && pktType == packetTypeDummy {
+					log.Warnf("Current tcp capacity is low (%v), try to wait some time at %v", capacity, time.Now().Format("15:04:05.000000"))
+					time.Sleep(20 * time.Millisecond)
+				}
+
 				var frameBuf bytes.Buffer
 				err = conn.makePacket(&frameBuf, pktType, data, padLen)
 				if err != nil {
 					errChan <- err
 					return
-				}
-				capacity, _ := utils.EstimateTCPCapacity(conn.Conn)
-				log.Debugf("The current tcp capacity is %v at %v", capacity, time.Now().Format("15:04:05.000000"))
-				if capacity <= maxPacketPayloadLength && pktType == packetTypeDummy {
-					//drop dummy packet to avoid the socket closed
-					log.Warnf("The socket is congested, try to skip one dummy packet at %v", time.Now().Format("15:04:05.000000"))
-					time.Sleep(10 * time.Millisecond)
-					break
 				}
 				_, wtErr := conn.Conn.Write(frameBuf.Bytes())
 				if wtErr != nil {
