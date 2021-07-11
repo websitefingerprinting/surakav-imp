@@ -507,7 +507,7 @@ func (conn *wfganConn) ReadFrom(r io.Reader) (written int64, err error) {
 
 				var capacity int
 				capacity, _ = utils.EstimateTCPCapacity(conn.Conn)
-				for capacity <= maxPacketPayloadLength && pktType == packetTypeDummy {
+				if capacity < maxPacketPayloadLength && pktType == packetTypeDummy {
 					log.Warnf("Current tcp capacity is low (%v), try to wait some time at %v", capacity, time.Now().Format("15:04:05.000000"))
 					time.Sleep(20 * time.Millisecond)
 				}
