@@ -484,7 +484,7 @@ func (conn *wfganConn) ReadFrom(r io.Reader) (written int64, err error) {
 	defer close(closeChan)
 
 	errChan := make(chan error, 5)  // errors from all the go routines will be sent to this channel
-	sendChan := make(chan PacketInfo, 65535) // all packed packets are sent through this channel
+	sendChan := make(chan PacketInfo, 10000) // all packed packets are sent through this channel
 	refillChan := make(chan bool, 1000) // signal gRPC to refill the burst sequence queue
 
 	var realNSeg uint32 = 0  // real packet counter over tWindow second
@@ -510,6 +510,8 @@ func (conn *wfganConn) ReadFrom(r io.Reader) (written int64, err error) {
 					errChan <- err
 					return
 				}
+				capacity, _ := utils.EstimateTCPCapacity(conn.Conn)
+				log.Debugf("The current tcp capacity is %v at %v", capacity, time.Now().Format("15:04:05.000000"))
 				_, wtErr := conn.Conn.Write(frameBuf.Bytes())
 				if wtErr != nil {
 					errChan <- wtErr
@@ -520,8 +522,9 @@ func (conn *wfganConn) ReadFrom(r io.Reader) (written int64, err error) {
 					// since it is very trivial to remove the finish packet for an attacker
 					// (i.e., the last packet of each burst), there is no need to log this packet
 					log.Infof("[TRACE_LOG] %d %d %d", time.Now().UnixNano(), int64(len(data)), int64(padLen))
+				} else if conn.isServer {
+					log.Debugf("[Send] %-8s, %-3d+ %-3d bytes at %v", pktTypeMap[pktType], len(data), padLen, time.Now().Format("15:04:05.000000"))
 				}
-				//log.Debugf("[Send] %-8s, %-3d+ %-3d bytes at %v", pktTypeMap[pktType], len(data), padLen, time.Now().Format("15:04:05.000000"))
 			}
 		}
 	}()
@@ -688,6 +691,7 @@ func (conn *wfganConn) ReadFrom(r io.Reader) (written int64, err error) {
 					burstTuple, qerr := burstQueue.Dequeue()
 					if qerr != nil {
 						log.Warnf("[Event] Potential data race in the main loop: %v", qerr)
+						time.Sleep(50 * time.Millisecond)
 						break
 					}
 					log.Debugf("[Event] Sample a burst tuple: %v", burstTuple)

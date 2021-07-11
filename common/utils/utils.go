@@ -4,7 +4,11 @@ import (
 	"bufio"
 	"fmt"
 	pt "git.torproject.org/pluggable-transports/goptlib.git"
+	"github.com/mikioh/tcp"
+	"github.com/mikioh/tcpinfo"
 	"github.com/websitefingerprinting/wfdef.git/common/log"
+	"net"
+
 	//"log"
 	"math"
 	"math/rand"
@@ -88,4 +92,26 @@ func SampleIPT(arr []float64) int{
 		res = 500
 	}
 	return int(res)
+}
+
+func EstimateTCPCapacity(conn net.Conn) (capacity int, err error){
+	tc, err := tcp.NewConn(conn)
+	if err != nil {
+		return 0, err
+	}
+
+	var o tcpinfo.Info
+	var b [256]byte
+	i, err := tc.Option(o.Level(), o.Name(), b[:])
+	if j, ok := i.(*tcpinfo.Info); ok{
+		snd_cwnd := int(j.CongestionControl.SenderWindowSegs)
+		unacked := int(j.Sys.UnackedSegs)
+		//unacked := 0 //macos no such info
+
+		capacity = (snd_cwnd - unacked) * int(j.SenderMSS)
+		return capacity, nil
+	}
+
+
+	return 0, err
 }
