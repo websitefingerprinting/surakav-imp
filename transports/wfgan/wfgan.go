@@ -740,7 +740,7 @@ func sendRefBurst(refBurstSize uint32, tol float32, receiveBuf *bytes.Buffer, se
 	} else {
 		toSend = upperBound
 	}
-	log.Debugf("[ON] Ref: %v bytes, lower: %v bytes, upper: %v bytes, bufSize: %v, toSend: %v bytes", refBurstSize, lowerBound, upperBound, bufSize, toSend)
+	log.Debugf("[ON] Ref: %v bytes, lower: %v bytes, upper: %v bytes, bufSize: %v, toSend: %v bytes at %v", refBurstSize, lowerBound, upperBound, bufSize, toSend, time.Now().Format("15:04:05.000000"))
 	for toSend >= maxPacketPayloadLength {
 		var payload [maxPacketPayloadLength]byte
 		rdLen, _ := receiveBuf.Read(payload[:])
