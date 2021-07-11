@@ -78,7 +78,7 @@ const (
 	replayTTL              = time.Duration(3) * time.Hour
 
 	maxCloseDelay      = 60
-	tWindow            = 5000 * time.Millisecond
+	tWindow            = 4000 * time.Millisecond
 	maxQueueSize       = 1000 * 3
 
 	gRPCAddr           = "localhost:9999"
@@ -512,7 +512,7 @@ func (conn *wfganConn) ReadFrom(r io.Reader) (written int64, err error) {
 				}
 				capacity, _ := utils.EstimateTCPCapacity(conn.Conn)
 				log.Debugf("The current tcp capacity is %v at %v", capacity, time.Now().Format("15:04:05.000000"))
-				if capacity < 0 && pktType == packetTypeDummy {
+				if capacity <= maxPacketPayloadLength && pktType == packetTypeDummy {
 					//drop dummy packet to avoid the socket closed
 					log.Warnf("The socket is congested, try to skip one dummy packet at %v", time.Now().Format("15:04:05.000000"))
 					time.Sleep(10 * time.Millisecond)
