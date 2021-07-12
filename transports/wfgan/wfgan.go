@@ -135,7 +135,11 @@ func (t *Transport) ServerFactory(stateDir string, args *pt.Args) (base.ServerFa
 	}
 	rng := rand.New(drbg)
 
-	sf := &wfganServerFactory{t, &ptArgs, st.nodeID, st.identityKey, st.drbgSeed, st.tol, filter, rng.Intn(maxCloseDelay)}
+	//read in the ipt file
+	parPath, _ := path.Split(os.Args[0])
+	iptList := utils.ReadFloatFromFile(path.Join(parPath, o2iRelPath))
+
+	sf := &wfganServerFactory{t, &ptArgs, st.nodeID, st.identityKey, st.drbgSeed, st.tol, &iptList, filter, rng.Intn(maxCloseDelay)}
 	return sf, nil
 }
 
@@ -230,6 +234,7 @@ type wfganServerFactory struct {
 	lenSeed      *drbg.Seed
 	
 	tol          float32
+	iptList      *[]float64
 
 	replayFilter *replayfilter.ReplayFilter
 	closeDelay int
@@ -261,8 +266,7 @@ func (sf *wfganServerFactory) WrapConn(conn net.Conn) (net.Conn, error) {
 	lenDist := probdist.New(sf.lenSeed, 0, framing.MaximumSegmentLength, false)
 
 	//read in the ipt file
-	parPath, _ := path.Split(os.Args[0])
-	iptList := utils.ReadFloatFromFile(path.Join(parPath, o2iRelPath))
+	iptList := sf.iptList
 
 	// The server's initial state is intentionally set to stateStart at the very beginning to obfuscate the RTT between client and server
 	c := &wfganConn{conn, true, lenDist, sf.tol, stateStop, 0, 0,canSendChan, bytes.NewBuffer(nil), bytes.NewBuffer(nil), make([]byte, consumeReadSize), iptList, nil, nil}
@@ -298,7 +302,7 @@ type wfganConn struct {
 	receiveBuffer        *bytes.Buffer
 	receiveDecodedBuffer *bytes.Buffer
 	readBuffer           []byte
-	iptList              []float64
+	iptList              *[]float64
 
 	encoder *framing.Encoder
 	decoder *framing.Decoder
@@ -321,9 +325,8 @@ func newWfganClientConn(conn net.Conn, args *wfganClientArgs) (c *wfganConn, err
 	parPath, _ := path.Split(os.Args[0])
 	iptList := utils.ReadFloatFromFile(path.Join(parPath, o2oRelPath))
 
-
 	// Allocate the client structure.
-	c = &wfganConn{conn, false, lenDist, args.tol, stateStop, 0, 0,nil, bytes.NewBuffer(nil), bytes.NewBuffer(nil), make([]byte, consumeReadSize), iptList, nil, nil}
+	c = &wfganConn{conn, false, lenDist, args.tol, stateStop, 0, 0,nil, bytes.NewBuffer(nil), bytes.NewBuffer(nil), make([]byte, consumeReadSize), &iptList, nil, nil}
 	log.Debugf("Client pt con status: isServer: %v, tol: %.2f", c.isServer, c.tol)
 	// Start the handshake timeout.
 	deadline := time.Now().Add(clientHandshakeTimeout)
@@ -526,6 +529,7 @@ func (conn *wfganConn) ReadFromServer(r io.Reader) (written int64, err error) {
 				err = conn.makePacket(&frameBuf, pktType, data, padLen)
 				if err != nil {
 					errChan <- err
+					log.Infof("[Routine] Send routine exits by make pkt err.")
 					return
 				}
 				_, wtErr := conn.Conn.Write(frameBuf.Bytes())
@@ -534,7 +538,7 @@ func (conn *wfganConn) ReadFromServer(r io.Reader) (written int64, err error) {
 					log.Infof("[Routine] Send routine exits by write err.")
 					return
 				}
-				log.Debugf("[Send] %-8s, %-3d+ %-3d bytes at %v", pktTypeMap[pktType], len(data), padLen, time.Now().Format("15:04:05.000000"))
+				//log.Debugf("[Send] %-8s, %-3d+ %-3d bytes at %v", pktTypeMap[pktType], len(data), padLen, time.Now().Format("15:04:05.000000"))
 			}
 		}
 	}()
@@ -552,7 +556,7 @@ func (conn *wfganConn) ReadFromServer(r io.Reader) (written int64, err error) {
 				buf := make([]byte, 65535)
 				rdLen, err := r.Read(buf[:])
 				if err!= nil {
-					log.Errorf("Exit by read err:%v", err)
+					log.Errorf("[Routine] Exit by read err:%v", err)
 					errChan <- err
 					return
 				}
@@ -560,10 +564,11 @@ func (conn *wfganConn) ReadFromServer(r io.Reader) (written int64, err error) {
 					_, werr := receiveBuf.Write(buf[: rdLen])
 					if werr != nil {
 						errChan <- werr
+						log.Errorf("[Routine] Exit by write err:%v", err)
 						return
 					}
 				} else {
-					log.Errorf("BUG? read 0 bytes, err: %v", err)
+					log.Errorf("[Routine] BUG? read 0 bytes, err: %v", err)
 					errChan <- io.EOF
 					return
 				}
@@ -650,6 +655,7 @@ func (conn *wfganConn) ReadFromClient(r io.Reader) (written int64, err error) {
 				err = conn.makePacket(&frameBuf, pktType, data, padLen)
 				if err != nil {
 					errChan <- err
+					log.Infof("[Routine] Send routine exits by err.")
 					return
 				}
 				_, wtErr := conn.Conn.Write(frameBuf.Bytes())
@@ -658,12 +664,10 @@ func (conn *wfganConn) ReadFromClient(r io.Reader) (written int64, err error) {
 					log.Infof("[Routine] Send routine exits by write err.")
 					return
 				}
-				if !conn.isServer && logEnabled && pktType != packetTypeFinish {
+				if logEnabled && pktType != packetTypeFinish {
 					// since it is very trivial to remove the finish packet for an attacker
 					// (i.e., the last packet of each burst), there is no need to log this packet
 					log.Infof("[TRACE_LOG] %d %d %d", time.Now().UnixNano(), int64(len(data)), int64(padLen))
-				} else if conn.isServer {
-					log.Debugf("[Send] %-8s, %-3d+ %-3d bytes at %v", pktTypeMap[pktType], len(data), padLen, time.Now().Format("15:04:05.000000"))
 				}
 			}
 		}
@@ -745,6 +749,7 @@ func (conn *wfganConn) ReadFromClient(r io.Reader) (written int64, err error) {
 					return
 				}
 			case <- ticker.C:
+				log.Debugf("[State] Real Sent: %v, Real Receive: %v, curState: %s at %v.", conn.nRealSegSent, conn.nRealSegRcv, stateMap[atomic.LoadUint32(&conn.state)], time.Now().Format("15:04:05.000000"))
 				if atomic.LoadUint32(&conn.state) != stateStop {
 					if atomic.LoadUint32(&conn.nRealSegSent) < 2 ||  atomic.LoadUint32(&conn.nRealSegRcv) < 2{
 						log.Infof("[State] Real Sent: %v, Real Receive: %v, %s -> %s at %v.", conn.nRealSegSent, conn.nRealSegRcv, stateMap[atomic.LoadUint32(&conn.state)], stateMap[stateStop], time.Now().Format("15:04:05.000000"))
@@ -859,10 +864,10 @@ func (conn *wfganConn) ReadFromClient(r io.Reader) (written int64, err error) {
 
 
 func (conn *wfganConn) sampleIPT() (ipt time.Duration, err error) {
-	if len(conn.iptList) == 0 {
+	if len(*conn.iptList) == 0 {
 		return time.Duration(0), errors.New("the ipt list is empty or nil")
 	}
-	return time.Duration(utils.SampleIPT(conn.iptList)) * time.Millisecond, nil
+	return time.Duration(utils.SampleIPT(*conn.iptList)) * time.Millisecond, nil
 }
 
 func (conn *wfganConn) sendRefBurst(refBurstSize uint32, receiveBuf *utils.SafeBuffer, sendChan chan PacketInfo) (written int64) {
@@ -900,8 +905,8 @@ func (conn *wfganConn) sendRefBurst(refBurstSize uint32, receiveBuf *utils.SafeB
 }
 
 func (conn *wfganConn) sendRealBurst(receiveBuf *utils.SafeBuffer, sendChan chan PacketInfo) (written int64, err error) {
-	if len:= receiveBuf.GetLen(); len > 0 {
-		log.Debugf("[OFF] Send %v bytes at %v", len, time.Now().Format("15:04:05.000000"))
+	if size:= receiveBuf.GetLen(); size > 0 {
+		log.Debugf("[OFF] Send %v bytes at %v", size, time.Now().Format("15:04:05.000000"))
 	}
 	for receiveBuf.GetLen() > 0 {
 		var payload [maxPacketPayloadLength]byte
