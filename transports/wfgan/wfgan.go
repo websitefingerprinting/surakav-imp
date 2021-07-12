@@ -256,7 +256,7 @@ func (sf *wfganServerFactory) WrapConn(conn net.Conn) (net.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	canSendChan := make(chan uint32, 10)  // just to make sure that this channel wont be blocked
+	canSendChan := make(chan uint32, 100)  // just to make sure that this channel wont be blocked
 
 	lenDist := probdist.New(sf.lenSeed, 0, framing.MaximumSegmentLength, false)
 
@@ -290,7 +290,11 @@ type wfganConn struct {
 	nRealSegSent  uint32 // real packet counter over tWindow second
 	nRealSegRcv   uint32
 
-	canSendChan          chan uint32 //  used on server side
+	//use to receive the signal from client how much bytes to send
+	//zero means defense off, positive numbers means defense on and the bytes required
+	//used on serverside
+	canSendChan          chan uint32
+
 	receiveBuffer        *bytes.Buffer
 	receiveDecodedBuffer *bytes.Buffer
 	readBuffer           []byte
@@ -486,16 +490,23 @@ func (conn *wfganConn) Read(b []byte) (n int, err error) {
 
 
 func (conn *wfganConn) ReadFrom(r io.Reader) (written int64, err error) {
+	if conn.isServer {
+		return conn.ReadFromServer(r)
+	} else {
+		return conn.ReadFromClient(r)
+	}
+}
+
+func (conn *wfganConn) ReadFromServer(r io.Reader) (written int64, err error) {
 	log.Infof("[State] Enter copyloop state: %v", stateMap[conn.state])
 	closeChan := make(chan int)
 	defer close(closeChan)
 
 	errChan := make(chan error, 5)  // errors from all the go routines will be sent to this channel
 	sendChan := make(chan PacketInfo, 10000) // all packed packets are sent through this channel
-	refillChan := make(chan bool, 1000) // signal gRPC to refill the burst sequence queue
-	
-	var receiveBuf bytes.Buffer //read payload from upstream and buffer here
-	var burstQueue = queue.NewFixedFIFO(maxQueueSize)// maintain a queue of burst seqs
+
+
+	var receiveBuf utils.SafeBuffer //read payload from upstream and buffer here
 
 	//create a go routine to send out packets to the wire
 	go func() {
@@ -511,12 +522,129 @@ func (conn *wfganConn) ReadFrom(r io.Reader) (written int64, err error) {
 				data    := packetInfo.data
 				padLen  := packetInfo.padLen
 
-				//var capacity int
-				//capacity, _ = utils.EstimateTCPCapacity(conn.Conn)
-				//if capacity < maxPacketPayloadLength && pktType == packetTypeDummy {
-				//	log.Warnf("Current tcp capacity is low (%v), try to wait some time at %v", capacity, time.Now().Format("15:04:05.000000"))
-				//	time.Sleep(20 * time.Millisecond)
-				//}
+				var frameBuf bytes.Buffer
+				err = conn.makePacket(&frameBuf, pktType, data, padLen)
+				if err != nil {
+					errChan <- err
+					return
+				}
+				_, wtErr := conn.Conn.Write(frameBuf.Bytes())
+				if wtErr != nil {
+					errChan <- wtErr
+					log.Infof("[Routine] Send routine exits by write err.")
+					return
+				}
+				log.Debugf("[Send] %-8s, %-3d+ %-3d bytes at %v", pktTypeMap[pktType], len(data), padLen, time.Now().Format("15:04:05.000000"))
+			}
+		}
+	}()
+
+	// go routine to receive data from upperstream
+	go func() {
+		for {
+			select {
+			case _, ok := <-closeChan:
+				if !ok {
+					log.Infof("[Routine] Send routine exits by closedChan.")
+					return
+				}
+			default:
+				buf := make([]byte, 65535)
+				rdLen, err := r.Read(buf[:])
+				if err!= nil {
+					log.Errorf("Exit by read err:%v", err)
+					errChan <- err
+					return
+				}
+				if rdLen > 0 {
+					_, werr := receiveBuf.Write(buf[: rdLen])
+					if werr != nil {
+						errChan <- werr
+						return
+					}
+				} else {
+					log.Errorf("BUG? read 0 bytes, err: %v", err)
+					errChan <- io.EOF
+					return
+				}
+			}
+		}
+	}()
+
+	//go routine to detect on/off
+	go func() {
+		for{
+			select{
+			case _, ok := <-closeChan:
+				if !ok {
+					log.Infof("[Routine] Detect on/off routine exits by closedChan.")
+					return
+				}
+			default:
+				if atomic.LoadUint32(&conn.state) == stateStop {
+					conn.canSendChan <- 0
+				}
+				time.Sleep(50 * time.Millisecond)
+			}
+		}
+	}()
+
+	for {
+		select {
+		case conErr := <- errChan:
+			log.Infof("downstream copy loop terminated at %v. Reason: %v", time.Now().Format("15:04:05.000000"), conErr)
+			return written, conErr
+		case signalByteNum := <- conn.canSendChan:
+			if signalByteNum == 0 {
+				//defense off
+				writtenTmp, werr := conn.sendRealBurst(&receiveBuf, sendChan)
+				written += writtenTmp
+				if werr != nil {
+					return written, werr
+				}
+			} else {
+				//defense on
+				ipt, err := conn.sampleIPT()
+				if err != nil {
+					log.Errorf("Error when sampling ipt: %v", err)
+					errChan <- err
+				}
+				log.Debugf("[Event] Should sleep %v at %v", ipt, time.Now().Format("15:04:05.000000"))
+				utils.SleepRho(time.Now(), ipt)
+				log.Debugf("[Event] Finish sleep at %v", time.Now().Format("15:04:05.000000"))
+
+				writtenTmp := conn.sendRefBurst(signalByteNum, &receiveBuf, sendChan)
+				written += writtenTmp
+			}
+		}
+	}
+}
+
+func (conn *wfganConn) ReadFromClient(r io.Reader) (written int64, err error) {
+	log.Infof("[State] Enter copyloop state: %v", stateMap[conn.state])
+	closeChan := make(chan int)
+	defer close(closeChan)
+
+	errChan := make(chan error, 5)  // errors from all the go routines will be sent to this channel
+	sendChan := make(chan PacketInfo, 10000) // all packed packets are sent through this channel
+	refillChan := make(chan bool, 1000) // signal gRPC to refill the burst sequence queue
+	
+	var receiveBuf utils.SafeBuffer //read payload from upstream and buffer here
+	var burstQueue = queue.NewFixedFIFO(maxQueueSize)// maintain a queue of burst seqs
+
+	//create a go routine to send out packets to the wire
+	go func() {
+		for {
+			select{
+			case _, ok := <- closeChan:
+				if !ok{
+					log.Infof("[Routine] Send routine exits by closedChan.")
+					return
+				}
+			case packetInfo := <- sendChan:
+				pktType := packetInfo.pktType
+				data    := packetInfo.data
+				padLen  := packetInfo.padLen
 
 				var frameBuf bytes.Buffer
 				err = conn.makePacket(&frameBuf, pktType, data, padLen)
@@ -554,8 +682,9 @@ func (conn *wfganConn) ReadFrom(r io.Reader) (written int64, err error) {
 				}
 			case shouldRefill := <- refillChan:
 				if shouldRefill {
-					ctx, _ := context.WithTimeout(context.Background(), 5*time.Second)
+					ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 					conn, err := grpc.DialContext(ctx, gRPCAddr, grpc.WithInsecure(), grpc.WithBlock())
+					cancel() //TODO
 					if err != nil {
 						log.Errorf("[gRPC] Cannot connect to py server. Exit the program.")
 						errChan <- err
@@ -579,7 +708,7 @@ func (conn *wfganConn) ReadFrom(r io.Reader) (written int64, err error) {
 					}
 					log.Debugf("[gRPC] After: Refilled queue (size %v) with %v elements at %v", burstQueue.GetLen(), len(resp.Packets)/2, time.Now().Format("15:04:05.000000"))
 				} else {
-					if !conn.isServer && atomic.LoadUint32(&conn.state) != stateStart {
+					if atomic.LoadUint32(&conn.state) != stateStart {
 						log.Debugf("[Event] Empty the queue (len %v)", burstQueue.GetLen())
 						for {
 							_, qerr := burstQueue.Dequeue()
@@ -616,10 +745,7 @@ func (conn *wfganConn) ReadFrom(r io.Reader) (written int64, err error) {
 					return
 				}
 			case <- ticker.C:
-				//if !conn.isServer {
-				//	log.Debugf("[Event] nRealSegSent %v at %v", conn.nRealSegSent, time.Now().Format("15:04:05.000000"))
-				//}
-				if !conn.isServer && atomic.LoadUint32(&conn.state) != stateStop {
+				if atomic.LoadUint32(&conn.state) != stateStop {
 					if atomic.LoadUint32(&conn.nRealSegSent) < 2 ||  atomic.LoadUint32(&conn.nRealSegRcv) < 2{
 						log.Infof("[State] Real Sent: %v, Real Receive: %v, %s -> %s at %v.", conn.nRealSegSent, conn.nRealSegRcv, stateMap[atomic.LoadUint32(&conn.state)], stateMap[stateStop], time.Now().Format("15:04:05.000000"))
 						atomic.StoreUint32(&conn.state, stateStop)
@@ -648,12 +774,18 @@ func (conn *wfganConn) ReadFrom(r io.Reader) (written int64, err error) {
 				if err!= nil {
 					log.Errorf("Exit by read err:%v", err)
 					errChan <- err
+					return
 				}
 				if rdLen > 0 {
-					receiveBuf.Write(buf[: rdLen])
+					_, werr := receiveBuf.Write(buf[: rdLen])
+					if werr != nil {
+						errChan <- werr
+						return
+					}
 				} else {
 					log.Errorf("BUG? read 0 bytes, err: %v", err)
 					errChan <- io.EOF
+					return
 				}
 			}
 		}
@@ -665,12 +797,12 @@ func (conn *wfganConn) ReadFrom(r io.Reader) (written int64, err error) {
 			log.Infof("downstream copy loop terminated at %v. Reason: %v", time.Now().Format("15:04:05.000000"), conErr)
 			return written, conErr
 		default:
-			bufSize := receiveBuf.Len()
+			bufSize := receiveBuf.GetLen()
 
 			//signal server to start if there is more than one cell coming
 			// else switch to padding state
 			// stop -> ready -> start
-			if !conn.isServer && bufSize > 0{
+			if bufSize > 0{
 				if (atomic.LoadUint32(&conn.state) == stateStop && bufSize > maxPacketPayloadLength) ||
 					(atomic.LoadUint32(&conn.state) == stateReady) {
 					// stateStop with >2 cells -> stateStart
@@ -686,48 +818,32 @@ func (conn *wfganConn) ReadFrom(r io.Reader) (written int64, err error) {
 			}
 
 			if atomic.LoadUint32(&conn.state) == stateStart {
-				//defense on, client: sample a ipt and send out a burst
-				//server: wait for the signal from canSendChan
-				if conn.isServer {
-					refBurstSize := <- conn.canSendChan
-					ipt, err := conn.sampleIPT()
-					if err != nil {
-						log.Errorf("Error when sampling ipt: %v", err)
-						errChan <- err
-					}
-					log.Debugf("[Event] Should sleep %v at %v", ipt, time.Now().Format("15:04:05.000000"))
-					utils.SleepRho(time.Now(), ipt)
-					log.Debugf("[Event] Finish sleep at %v", time.Now().Format("15:04:05.000000"))
-
-					writtenTmp := conn.sendRefBurst(refBurstSize, &receiveBuf, sendChan)
-					written += writtenTmp
-				} else {
-					ipt, err := conn.sampleIPT()
-					if err != nil {
-						log.Errorf("Error when sampling ipt: %v", err)
-						errChan <- err
-					}
-					log.Debugf("[Event] Should sleep %v at %v", ipt, time.Now().Format("15:04:05.000000"))
-					utils.SleepRho(time.Now(), ipt)
-					log.Debugf("[Event] Finish sleep at %v", time.Now().Format("15:04:05.000000"))
-
-					burstTuple, qerr := burstQueue.Dequeue()
-					if qerr != nil {
-						log.Warnf("[Event] Potential data race in the main loop: %v", qerr)
-						time.Sleep(50 * time.Millisecond)
-						break
-					}
-					log.Debugf("[Event] Sample a burst tuple: %v", burstTuple)
-					requestSize := burstTuple.(rrTuple).request
-					responseSize := burstTuple.(rrTuple).response
-					writtenTmp := conn.sendRefBurst(uint32(requestSize), &receiveBuf, sendChan)
-					written += writtenTmp
-					//send a finish signal
-					var payload [4]byte
-					binary.BigEndian.PutUint32(payload[:], uint32(responseSize))
-					sendChan <- PacketInfo{pktType: packetTypeFinish, data: payload[:], padLen: uint16(maxPacketPaddingLength-4)}
-					log.Debugf("[ON] Response size %v", responseSize)
+				//defense on, client: sample an ipt and send out a burst
+				ipt, err := conn.sampleIPT()
+				if err != nil {
+					log.Errorf("Error when sampling ipt: %v", err)
+					return written, err
 				}
+				log.Debugf("[Event] Should sleep %v at %v", ipt, time.Now().Format("15:04:05.000000"))
+				utils.SleepRho(time.Now(), ipt)
+				log.Debugf("[Event] Finish sleep at %v", time.Now().Format("15:04:05.000000"))
+
+				burstTuple, qerr := burstQueue.Dequeue()
+				if qerr != nil {
+					log.Warnf("[Event] Potential data race in the main loop: %v", qerr)
+					time.Sleep(50 * time.Millisecond)
+					break
+				}
+				log.Debugf("[Event] Sample a burst tuple: %v", burstTuple)
+				requestSize := burstTuple.(rrTuple).request
+				responseSize := burstTuple.(rrTuple).response
+				writtenTmp := conn.sendRefBurst(uint32(requestSize), &receiveBuf, sendChan)
+				written += writtenTmp
+				//send a finish signal
+				var payload [4]byte
+				binary.BigEndian.PutUint32(payload[:], uint32(responseSize))
+				sendChan <- PacketInfo{pktType: packetTypeFinish, data: payload[:], padLen: uint16(maxPacketPaddingLength-4)}
+				log.Debugf("[ON] Response size %v", responseSize)
 			} else {
 				//defense off (in stop or ready)
 				writtenTmp, werr := conn.sendRealBurst(&receiveBuf, sendChan)
@@ -741,6 +857,7 @@ func (conn *wfganConn) ReadFrom(r io.Reader) (written int64, err error) {
 	}
 }
 
+
 func (conn *wfganConn) sampleIPT() (ipt time.Duration, err error) {
 	if len(conn.iptList) == 0 {
 		return time.Duration(0), errors.New("the ipt list is empty or nil")
@@ -748,12 +865,12 @@ func (conn *wfganConn) sampleIPT() (ipt time.Duration, err error) {
 	return time.Duration(utils.SampleIPT(conn.iptList)) * time.Millisecond, nil
 }
 
-func (conn *wfganConn) sendRefBurst(refBurstSize uint32, receiveBuf *bytes.Buffer, sendChan chan PacketInfo) (written int64) {
+func (conn *wfganConn) sendRefBurst(refBurstSize uint32, receiveBuf *utils.SafeBuffer, sendChan chan PacketInfo) (written int64) {
 	lowerBound := utils.IntMax(int(math.Round(float64(refBurstSize) * float64(1 - conn.tol))), 536)
 	upperBound := int(math.Round(float64(refBurstSize) * float64(1 + conn.tol)))
 
 	var toSend int
-	bufSize := receiveBuf.Len()
+	bufSize := receiveBuf.GetLen()
 	if bufSize < lowerBound {
 		toSend = lowerBound
 	} else if bufSize < upperBound {
@@ -769,7 +886,9 @@ func (conn *wfganConn) sendRefBurst(refBurstSize uint32, receiveBuf *bytes.Buffe
 		var pktType uint8
 		if rdLen > 0{
 			pktType = packetTypePayload
-			atomic.AddUint32(&conn.nRealSegSent, 1)
+			if !conn.isServer {
+				atomic.AddUint32(&conn.nRealSegSent, 1)
+			}
 		} else {
 			// no data, send out a dummy packet
 			pktType = packetTypeDummy
@@ -780,11 +899,11 @@ func (conn *wfganConn) sendRefBurst(refBurstSize uint32, receiveBuf *bytes.Buffe
 	return written
 }
 
-func (conn *wfganConn) sendRealBurst(receiveBuf *bytes.Buffer, sendChan chan PacketInfo) (written int64, err error) {
-	if receiveBuf.Len() > 0 {
-		log.Debugf("[OFF] Send %v bytes at %v", receiveBuf.Len(), time.Now().Format("15:04:05.000000"))
+func (conn *wfganConn) sendRealBurst(receiveBuf *utils.SafeBuffer, sendChan chan PacketInfo) (written int64, err error) {
+	if len:= receiveBuf.GetLen(); len > 0 {
+		log.Debugf("[OFF] Send %v bytes at %v", len, time.Now().Format("15:04:05.000000"))
 	}
-	for receiveBuf.Len() > 0 {
+	for receiveBuf.GetLen() > 0 {
 		var payload [maxPacketPayloadLength]byte
 		rdLen, rdErr := receiveBuf.Read(payload[:])
 		written += int64(rdLen)
@@ -793,7 +912,9 @@ func (conn *wfganConn) sendRealBurst(receiveBuf *bytes.Buffer, sendChan chan Pac
 			return written, rdErr
 		}
 		sendChan <- PacketInfo{pktType: packetTypePayload, data: payload[:rdLen], padLen: uint16(maxPacketPaddingLength-rdLen)}
-		atomic.AddUint32(&conn.nRealSegSent, 1)
+		if !conn.isServer {
+			atomic.AddUint32(&conn.nRealSegSent, 1)
+		}
 	}
 	return
 }
