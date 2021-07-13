@@ -612,7 +612,7 @@ func (conn *wfganConn) ReadFromServer(r io.Reader) (written int64, err error) {
 				ipt, err := conn.sampleIPT()
 				if err != nil {
 					log.Errorf("Error when sampling ipt: %v", err)
-					errChan <- err
+					return written, err
 				}
 				log.Debugf("[Event] Should sleep %v at %v", ipt, time.Now().Format("15:04:05.000000"))
 				utils.SleepRho(time.Now(), ipt)
@@ -688,7 +688,7 @@ func (conn *wfganConn) ReadFromClient(r io.Reader) (written int64, err error) {
 				if shouldRefill {
 					ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 					conn, err := grpc.DialContext(ctx, gRPCAddr, grpc.WithInsecure(), grpc.WithBlock())
-					cancel() //TODO
+					cancel() 
 					if err != nil {
 						log.Errorf("[gRPC] Cannot connect to py server. Exit the program.")
 						errChan <- err
