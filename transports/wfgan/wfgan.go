@@ -32,7 +32,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
-	"errors"
 	"fmt"
 	pt "git.torproject.org/pluggable-transports/goptlib.git"
 	queue "github.com/enriquebris/goconcurrentqueue"
@@ -84,7 +83,7 @@ const (
 	gRPCAddr           = "localhost:9999"
 	o2oRelPath         = "../transports/wfgan/grpc/time_feature_0-100x0-1000_o2o.ipt"  //relative to wfdef/obfs4proxy
 	o2iRelPath         = "../transports/wfgan/grpc/time_feature_0-100x0-1000_o2i.ipt"
-
+	o2iEnabled         = false
 	logEnabled         = true
 )
 
@@ -136,8 +135,14 @@ func (t *Transport) ServerFactory(stateDir string, args *pt.Args) (base.ServerFa
 	rng := rand.New(drbg)
 
 	//read in the ipt file
-	parPath, _ := path.Split(os.Args[0])
-	iptList := utils.ReadFloatFromFile(path.Join(parPath, o2iRelPath))
+	var iptList []float64
+	if o2iEnabled {
+		parPath, _ := path.Split(os.Args[0])
+		iptList = utils.ReadFloatFromFile(path.Join(parPath, o2iRelPath))
+	} else {
+		log.Infof("O2I is not loaded.")
+		iptList = []float64{}
+	}
 
 	sf := &wfganServerFactory{t, &ptArgs, st.nodeID, st.identityKey, st.drbgSeed, st.tol, &iptList, filter, rng.Intn(maxCloseDelay)}
 	return sf, nil
@@ -609,11 +614,7 @@ func (conn *wfganConn) ReadFromServer(r io.Reader) (written int64, err error) {
 				}
 			} else {
 				//defense on
-				ipt, err := conn.sampleIPT()
-				if err != nil {
-					log.Errorf("Error when sampling ipt: %v", err)
-					return written, err
-				}
+				ipt := conn.sampleIPT()
 				log.Debugf("[Event] Should sleep %v at %v", ipt, time.Now().Format("15:04:05.000000"))
 				utils.SleepRho(time.Now(), ipt)
 				log.Debugf("[Event] Finish sleep at %v", time.Now().Format("15:04:05.000000"))
@@ -824,11 +825,7 @@ func (conn *wfganConn) ReadFromClient(r io.Reader) (written int64, err error) {
 
 			if atomic.LoadUint32(&conn.state) == stateStart {
 				//defense on, client: sample an ipt and send out a burst
-				ipt, err := conn.sampleIPT()
-				if err != nil {
-					log.Errorf("Error when sampling ipt: %v", err)
-					return written, err
-				}
+				ipt := conn.sampleIPT()
 				log.Debugf("[Event] Should sleep %v at %v", ipt, time.Now().Format("15:04:05.000000"))
 				utils.SleepRho(time.Now(), ipt)
 				log.Debugf("[Event] Finish sleep at %v", time.Now().Format("15:04:05.000000"))
@@ -863,11 +860,12 @@ func (conn *wfganConn) ReadFromClient(r io.Reader) (written int64, err error) {
 }
 
 
-func (conn *wfganConn) sampleIPT() (ipt time.Duration, err error) {
+func (conn *wfganConn) sampleIPT() time.Duration {
 	if len(*conn.iptList) == 0 {
-		return time.Duration(0), errors.New("the ipt list is empty or nil")
+		log.Debugf("iptList is not given, return 0.")
+		return time.Duration(0)
 	}
-	return time.Duration(utils.SampleIPT(*conn.iptList)) * time.Millisecond, nil
+	return time.Duration(utils.SampleIPT(*conn.iptList)) * time.Millisecond
 }
 
 func (conn *wfganConn) sendRefBurst(refBurstSize uint32, receiveBuf *utils.SafeBuffer, sendChan chan PacketInfo) (written int64) {
