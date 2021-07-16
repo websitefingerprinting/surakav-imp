@@ -84,7 +84,9 @@ const (
 	o2oRelPath         = "../transports/wfgan/grpc/time_feature_0-100x0-1000_o2o.ipt"  //relative to wfdef/obfs4proxy
 	o2iRelPath         = "../transports/wfgan/grpc/time_feature_0-100x0-1000_o2i.ipt"
 	o2iEnabled         = false
-	logEnabled         = true
+	logEnabled         = false
+
+	tmpRho             = 52 // ms, median number
 )
 
 type wfganClientArgs struct {
@@ -617,7 +619,7 @@ func (conn *wfganConn) ReadFromServer(r io.Reader) (written int64, err error) {
 				ipt := conn.sampleIPT()
 				log.Debugf("[Event] Should sleep %v at %v", ipt, time.Now().Format("15:04:05.000000"))
 				utils.SleepRho(time.Now(), ipt)
-				log.Debugf("[Event] Finish sleep at %v", time.Now().Format("15:04:05.000000"))
+				//log.Debugf("[Event] Finish sleep at %v", time.Now().Format("15:04:05.000000"))
 
 				writtenTmp := conn.sendRefBurst(signalByteNum, &receiveBuf, sendChan)
 				written += writtenTmp
@@ -685,49 +687,37 @@ func (conn *wfganConn) ReadFromClient(r io.Reader) (written int64, err error) {
 					log.Infof("[Routine] padding factory exits by closedChan.")
 					return
 				}
-			case shouldRefill := <- refillChan:
-				if shouldRefill {
-					ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-					conn, err := grpc.DialContext(ctx, gRPCAddr, grpc.WithInsecure(), grpc.WithBlock())
-					cancel() 
-					if err != nil {
-						log.Errorf("[gRPC] Cannot connect to py server. Exit the program.")
-						errChan <- err
-						return
-					}
-					client := pb.NewGenerateTraceClient(conn)
-					//log.Debugf("[gRPC] Succeed to connect to py server.")
-					req := &pb.GANRequest{Ask: 1}
-					resp, err := client.Query(context.Background(), req)
-					if err!= nil{
-						log.Errorf("[gRPC] Error in request %v",err)
-					}
-					_  = conn.Close()
-					log.Debugf("[gRPC] Before: Refill queue (size %v) with %v elements at %v", burstQueue.GetLen(), len(resp.Packets)/2, time.Now().Format("15:04:05.000000"))
-					for i := 0; i < len(resp.Packets) - 1; i += 2 {
-						qerr := burstQueue.Enqueue(rrTuple{request: resp.Packets[i], response: resp.Packets[i+1]})
-						if qerr != nil {
-							log.Errorf("[gRPC] Error happened when enqueue: %v", qerr)
-							break
-						}
-					}
-					log.Debugf("[gRPC] After: Refilled queue (size %v) with %v elements at %v", burstQueue.GetLen(), len(resp.Packets)/2, time.Now().Format("15:04:05.000000"))
-				} else {
-					if atomic.LoadUint32(&conn.state) != stateStart {
-						log.Debugf("[Event] Empty the queue (len %v)", burstQueue.GetLen())
-						for {
-							_, qerr := burstQueue.Dequeue()
-							if qerr != nil {
-								break
-							}
-						}
+			case <- refillChan:
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				conn, err := grpc.DialContext(ctx, gRPCAddr, grpc.WithInsecure(), grpc.WithBlock())
+				cancel()
+				if err != nil {
+					log.Errorf("[gRPC] Cannot connect to py server. Exit the program.")
+					errChan <- err
+					return
+				}
+				client := pb.NewGenerateTraceClient(conn)
+				//log.Debugf("[gRPC] Succeed to connect to py server.")
+				req := &pb.GANRequest{Ask: 1}
+				resp, err := client.Query(context.Background(), req)
+				if err!= nil{
+					log.Errorf("[gRPC] Error in request %v",err)
+				}
+				_  = conn.Close()
+				log.Debugf("[gRPC] Before: Refill queue (size %v) with %v elements at %v", burstQueue.GetLen(), len(resp.Packets)/2, time.Now().Format("15:04:05.000000"))
+				for i := 0; i < len(resp.Packets) - 1; i += 2 {
+					qerr := burstQueue.Enqueue(rrTuple{request: resp.Packets[i], response: resp.Packets[i+1]})
+					if qerr != nil {
+						log.Errorf("[gRPC] Error happened when enqueue: %v", qerr)
+						break
 					}
 				}
+				log.Debugf("[gRPC] After: Refilled queue (size %v) with %v elements at %v", burstQueue.GetLen(), len(resp.Packets)/2, time.Now().Format("15:04:05.000000"))
 			default:
 				//client, defense on
 				// if the capacity of burstQueue is small, refill the queue
 				capacity := float64(burstQueue.GetLen()) / float64(maxQueueSize)
-				if !conn.isServer && atomic.LoadUint32(&conn.state) == stateStart && capacity < 0.1 {
+				if !conn.isServer && capacity < 0.1 {
 					log.Debugf("[Event] Low queue capacity %.2f, triggering refill event at %v", capacity, time.Now().Format("15:04:05.000000"))
 					refillChan <- true
 				}
@@ -750,13 +740,12 @@ func (conn *wfganConn) ReadFromClient(r io.Reader) (written int64, err error) {
 					return
 				}
 			case <- ticker.C:
-				log.Debugf("[State] Real Sent: %v, Real Receive: %v, curState: %s at %v.", conn.nRealSegSent, conn.nRealSegRcv, stateMap[atomic.LoadUint32(&conn.state)], time.Now().Format("15:04:05.000000"))
+				log.Infof("[State] Real Sent: %v, Real Receive: %v, curState: %s at %v.", conn.nRealSegSent, conn.nRealSegRcv, stateMap[atomic.LoadUint32(&conn.state)], time.Now().Format("15:04:05.000000"))
 				if atomic.LoadUint32(&conn.state) != stateStop {
 					if atomic.LoadUint32(&conn.nRealSegSent) < 2 ||  atomic.LoadUint32(&conn.nRealSegRcv) < 2{
 						log.Infof("[State] Real Sent: %v, Real Receive: %v, %s -> %s at %v.", conn.nRealSegSent, conn.nRealSegRcv, stateMap[atomic.LoadUint32(&conn.state)], stateMap[stateStop], time.Now().Format("15:04:05.000000"))
 						atomic.StoreUint32(&conn.state, stateStop)
 						sendChan <- PacketInfo{pktType: packetTypeSignalStop, data: []byte{}, padLen: maxPacketPaddingLength}
-						refillChan <- false //empty the queue since the defense will be turned off
 					}
 				}
 				atomic.StoreUint32(&conn.nRealSegSent, 0) //reset counter
@@ -816,7 +805,6 @@ func (conn *wfganConn) ReadFromClient(r io.Reader) (written int64, err error) {
 					log.Infof("[State] %s -> %s.", stateMap[atomic.LoadUint32(&conn.state)], stateMap[stateStart])
 					atomic.StoreUint32(&conn.state, stateStart)
 					sendChan <- PacketInfo{pktType: packetTypeSignalStart, data: []byte{}, padLen: maxPacketPaddingLength}
-					refillChan <- true
 				} else if atomic.LoadUint32(&conn.state) == stateStop {
 					log.Infof("[State] %s -> %s.", stateMap[stateStop], stateMap[stateReady])
 					atomic.StoreUint32(&conn.state, stateReady)
@@ -825,17 +813,14 @@ func (conn *wfganConn) ReadFromClient(r io.Reader) (written int64, err error) {
 
 			if atomic.LoadUint32(&conn.state) == stateStart {
 				//defense on, client: sample an ipt and send out a burst
-				ipt := conn.sampleIPT()
-				log.Debugf("[Event] Should sleep %v at %v", ipt, time.Now().Format("15:04:05.000000"))
-				utils.SleepRho(time.Now(), ipt)
-				log.Debugf("[Event] Finish sleep at %v", time.Now().Format("15:04:05.000000"))
-
-				burstTuple, qerr := burstQueue.Dequeue()
+				ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+				burstTuple, qerr := burstQueue.DequeueOrWaitForNextElementContext(ctx)
 				if qerr != nil {
-					log.Warnf("[Event] Potential data race in the main loop: %v", qerr)
-					time.Sleep(50 * time.Millisecond)
+					log.Infof("The queue is empty for 1 second, something wrong happened? Try again.")
+					cancel()
 					break
 				}
+				cancel()
 				log.Debugf("[Event] Sample a burst tuple: %v", burstTuple)
 				requestSize := burstTuple.(rrTuple).request
 				responseSize := burstTuple.(rrTuple).response
@@ -846,6 +831,11 @@ func (conn *wfganConn) ReadFromClient(r io.Reader) (written int64, err error) {
 				binary.BigEndian.PutUint32(payload[:], uint32(responseSize))
 				sendChan <- PacketInfo{pktType: packetTypeFinish, data: payload[:], padLen: uint16(maxPacketPaddingLength-4)}
 				log.Debugf("[ON] Response size %v", responseSize)
+
+				ipt := conn.sampleIPT()
+				log.Debugf("[Event] Should sleep %v at %v", ipt, time.Now().Format("15:04:05.000000"))
+				utils.SleepRho(time.Now(), ipt)
+				//log.Debugf("[Event] Finish sleep at %v", time.Now().Format("15:04:05.000000"))
 			} else {
 				//defense off (in stop or ready)
 				writtenTmp, werr := conn.sendRealBurst(&receiveBuf, sendChan)
@@ -861,6 +851,11 @@ func (conn *wfganConn) ReadFromClient(r io.Reader) (written int64, err error) {
 
 
 func (conn *wfganConn) sampleIPT() time.Duration {
+	if conn.isServer {
+		return 0 * time.Millisecond
+	} else {
+		return tmpRho * time.Millisecond
+	}
 	if len(*conn.iptList) == 0 {
 		log.Debugf("iptList is not given, return 0.")
 		return time.Duration(0)

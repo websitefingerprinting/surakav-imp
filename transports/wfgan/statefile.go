@@ -114,7 +114,7 @@ func serverStateFromArgs(stateDir string, args *pt.Args) (*wfganServerState, err
 	js.NodeID, nodeIDOk = args.Get(nodeIDArg)
 	js.PrivateKey, privKeyOk = args.Get(privateKeyArg)
 	js.DrbgSeed, seedOk = args.Get(seedArg)
-	tolStr, tolOK := args.Get(tolArg)
+	tolStr, tolOk := args.Get(tolArg)
 
 	// Either a private key, node id, and seed are ALL specified, or
 	// they should be loaded from the state file.
@@ -131,7 +131,7 @@ func serverStateFromArgs(stateDir string, args *pt.Args) (*wfganServerState, err
 	}
 
 	// The wfgan params should be independently configurable.
-	if tolOK {
+	if tolOk {
 		tol, err := strconv.ParseFloat(tolStr, 32)
 		if err != nil {
 			return nil, fmt.Errorf("malformed tol '%s'", tolStr)
@@ -158,7 +158,7 @@ func serverStateFromJSONServerState(stateDir string, js *jsonServerState) (*wfga
 		return nil, err
 	}
 	if js.Tol < 0{
-		return nil, fmt.Errorf("invalid tol '%d'", js.Tol)
+		return nil, fmt.Errorf("invalid tol '%.2f'", js.Tol)
 	}
 
 	st.tol = js.Tol
