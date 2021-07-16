@@ -86,7 +86,7 @@ const (
 	o2iEnabled         = false
 	logEnabled         = true
 
-	tmpRho             = 52 // ms, median number
+	tmpRho             = 60 // ms, median number
 )
 
 type wfganClientArgs struct {
