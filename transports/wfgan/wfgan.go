@@ -876,6 +876,11 @@ func (conn *wfganConn) sendRefBurst(refBurstSize uint32, receiveBuf *utils.SafeB
 	} else {
 		toSend = upperBound
 	}
+	if !conn.isServer {
+		//TODO it seems that outgoing side should pad more,
+		//so try not to allow any tolerance here
+		toSend = int(refBurstSize)
+	}
 	log.Debugf("[ON] Ref: %v bytes, lower: %v bytes, upper: %v bytes, bufSize: %v, toSend: %v bytes at %v", refBurstSize, lowerBound, upperBound, bufSize, toSend, time.Now().Format("15:04:05.000000"))
 	for toSend >= maxPacketPayloadLength {
 		var payload [maxPacketPayloadLength]byte
