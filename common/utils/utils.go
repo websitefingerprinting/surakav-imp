@@ -76,7 +76,7 @@ func ReadFloatFromFile(fdir string) []float64{
 }
 
 
-func SampleIPT(arr []float64) int{
+func SampleIPT(arr []float64) float64{
 	r := rand.New(rand.NewSource(time.Now().UnixNano()))
 	std := arr[0]
 	l := len(arr) -1
@@ -87,11 +87,8 @@ func SampleIPT(arr []float64) int{
 	if res < 0 {
 		//negative ipt
 		res = 0
-	} else if res > 500 {
-		// ipt > 0.5s
-		res = 500
 	}
-	return int(res)
+	return res
 }
 
 func EstimateTCPCapacity(conn net.Conn) (capacity int, err error){

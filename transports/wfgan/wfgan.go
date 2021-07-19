@@ -86,7 +86,7 @@ const (
 	o2iEnabled         = false
 	logEnabled         = true
 
-	tmpRho             = 60 // ms, median number
+	tmpRho             = 100 // ms, median number
 )
 
 type wfganClientArgs struct {
@@ -851,16 +851,23 @@ func (conn *wfganConn) ReadFromClient(r io.Reader) (written int64, err error) {
 
 
 func (conn *wfganConn) sampleIPT() time.Duration {
-	if conn.isServer {
-		return 0 * time.Millisecond
-	} else {
-		return tmpRho * time.Millisecond
-	}
+	//// Fixed time gap code
+	//if conn.isServer {
+	//	return 0 * time.Millisecond
+	//} else {
+	//	return tmpRho * time.Millisecond
+	//}
+	var ipt float64
 	if len(*conn.iptList) == 0 {
 		log.Debugf("iptList is not given, return 0.")
-		return time.Duration(0)
+		ipt = 0
+	} else {
+		ipt = utils.SampleIPT(*conn.iptList)
 	}
-	return time.Duration(utils.SampleIPT(*conn.iptList)) * time.Millisecond
+	if ipt > tmpRho {
+		ipt = tmpRho
+	}
+	return time.Duration(ipt) * time.Millisecond
 }
 
 func (conn *wfganConn) sendRefBurst(refBurstSize uint32, receiveBuf *utils.SafeBuffer, sendChan chan PacketInfo) (written int64) {
@@ -876,11 +883,7 @@ func (conn *wfganConn) sendRefBurst(refBurstSize uint32, receiveBuf *utils.SafeB
 	} else {
 		toSend = upperBound
 	}
-	if !conn.isServer {
-		//TODO it seems that outgoing side should pad more,
-		//so try not to allow any tolerance here
-		toSend = int(refBurstSize)
-	}
+
 	log.Debugf("[ON] Ref: %v bytes, lower: %v bytes, upper: %v bytes, bufSize: %v, toSend: %v bytes at %v", refBurstSize, lowerBound, upperBound, bufSize, toSend, time.Now().Format("15:04:05.000000"))
 	for toSend >= maxPacketPayloadLength {
 		var payload [maxPacketPayloadLength]byte
