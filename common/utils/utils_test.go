@@ -16,18 +16,13 @@ func TestReadFloatFromFile(t *testing.T) {
 	}
 }
 
-func TestSampleIPT(t *testing.T) {
-	arr := ReadFloatFromFile("../../transports/wfgan/grpc/time_feature_0-100x0-1000_o2o.ipt")
-	n := 3000
-	samples := make([]int, n)
-	for i := 0; i < len(samples); i++ {
-		samples[i] = SampleIPT(arr)
+func TestBernoulli(t *testing.T) {
+	p := 0.8
+	arr := [5000]int{}
+	sum := 0.0
+	for i:=0; i<len(arr); i++ {
+		arr[i] = Bernoulli(p)
+		sum += float64(arr[i]) / float64(len(arr))
 	}
-
-	total := 0
-	for _, sample := range samples {
-		total += sample
-	}
-	mean := float64(total) / float64(n)
-	fmt.Printf("mean: %v\n", mean)
+	fmt.Printf("%.2f\n", sum)
 }
