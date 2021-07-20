@@ -87,7 +87,7 @@ const (
 	o2iEnabled         = false
 	logEnabled         = true
 
-	tmpRho             = 100 // ms, median number
+	tmpRho             = 350 // ms, 90%
 )
 
 type wfganClientArgs struct {
@@ -795,6 +795,20 @@ func (conn *wfganConn) ReadFromClient(r io.Reader) (written int64, err error) {
 						errChan <- werr
 						return
 					}
+					//signal server to start if there is more than one cell coming
+					// else switch to padding state
+					// stop -> ready -> start
+					if (atomic.LoadUint32(&conn.state) == stateStop && rdLen > maxPacketPayloadLength) ||
+						(atomic.LoadUint32(&conn.state) == stateReady) {
+						// stateStop with >2 cells -> stateStart
+						// or stateReady with >0 cell -> stateStart
+						log.Infof("[State] Got %v bytes upstream, %s -> %s.", rdLen, stateMap[atomic.LoadUint32(&conn.state)], stateMap[stateStart])
+						atomic.StoreUint32(&conn.state, stateStart)
+						sendChan <- PacketInfo{pktType: packetTypeSignalStart, data: []byte{}, padLen: maxPacketPaddingLength}
+					} else if atomic.LoadUint32(&conn.state) == stateStop {
+						log.Infof("[State] Got %v bytes upstream, %s -> %s.", rdLen, stateMap[stateStop], stateMap[stateReady])
+						atomic.StoreUint32(&conn.state, stateReady)
+					}
 				} else {
 					log.Errorf("BUG? read 0 bytes, err: %v", err)
 					errChan <- io.EOF
@@ -810,27 +824,18 @@ func (conn *wfganConn) ReadFromClient(r io.Reader) (written int64, err error) {
 			log.Infof("downstream copy loop terminated at %v. Reason: %v", time.Now().Format("15:04:05.000000"), conErr)
 			return written, conErr
 		default:
-			bufSize := receiveBuf.GetLen()
-
-			//signal server to start if there is more than one cell coming
-			// else switch to padding state
-			// stop -> ready -> start
-			if bufSize > 0{
-				if (atomic.LoadUint32(&conn.state) == stateStop && bufSize > maxPacketPayloadLength) ||
-					(atomic.LoadUint32(&conn.state) == stateReady) {
-					// stateStop with >2 cells -> stateStart
-					// or stateReady with >0 cell -> stateStart
-					log.Infof("[State] %s -> %s.", stateMap[atomic.LoadUint32(&conn.state)], stateMap[stateStart])
-					atomic.StoreUint32(&conn.state, stateStart)
-					sendChan <- PacketInfo{pktType: packetTypeSignalStart, data: []byte{}, padLen: maxPacketPaddingLength}
-				} else if atomic.LoadUint32(&conn.state) == stateStop {
-					log.Infof("[State] %s -> %s.", stateMap[stateStop], stateMap[stateReady])
-					atomic.StoreUint32(&conn.state, stateReady)
-				}
-			}
-
 			if atomic.LoadUint32(&conn.state) == stateStart {
 				//defense on, client: sample an ipt and send out a burst
+				bufSize := receiveBuf.GetLen()
+				if bufSize == 0 {
+					ipt := conn.sampleIPT()
+					log.Debugf("[Event] Should sleep %v at %v", ipt, time.Now().Format("15:04:05.000000"))
+					utils.SleepRho(time.Now(), ipt)
+					//log.Debugf("[Event] Finish sleep at %v", time.Now().Format("15:04:05.000000"))
+				} else {
+					log.Debugf("[Event] Should not sleep because bufsize %v at %v", bufSize, time.Now().Format("15:04:05.000000"))
+				}
+
 				ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 				burstTuple, qerr := burstQueue.DequeueOrWaitForNextElementContext(ctx)
 				if qerr != nil {
@@ -849,11 +854,6 @@ func (conn *wfganConn) ReadFromClient(r io.Reader) (written int64, err error) {
 				binary.BigEndian.PutUint32(payload[:], uint32(responseSize))
 				sendChan <- PacketInfo{pktType: packetTypeFinish, data: payload[:], padLen: uint16(maxPacketPaddingLength-4)}
 				log.Debugf("[ON] Response size %v", responseSize)
-
-				ipt := conn.sampleIPT()
-				log.Debugf("[Event] Should sleep %v at %v", ipt, time.Now().Format("15:04:05.000000"))
-				utils.SleepRho(time.Now(), ipt)
-				//log.Debugf("[Event] Finish sleep at %v", time.Now().Format("15:04:05.000000"))
 			} else {
 				//defense off (in stop or ready)
 				writtenTmp, werr := conn.sendRealBurst(&receiveBuf, sendChan)
