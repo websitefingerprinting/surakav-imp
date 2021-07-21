@@ -87,7 +87,7 @@ const (
 	o2iEnabled         = false
 	logEnabled         = true
 
-	tmpRho             = 350 // ms, 90%
+	tmpRho             = 100 // ms, 98%
 )
 
 type wfganClientArgs struct {
@@ -826,16 +826,6 @@ func (conn *wfganConn) ReadFromClient(r io.Reader) (written int64, err error) {
 		default:
 			if atomic.LoadUint32(&conn.state) == stateStart {
 				//defense on, client: sample an ipt and send out a burst
-				bufSize := receiveBuf.GetLen()
-				if bufSize == 0 {
-					ipt := conn.sampleIPT()
-					log.Debugf("[Event] Should sleep %v at %v", ipt, time.Now().Format("15:04:05.000000"))
-					utils.SleepRho(time.Now(), ipt)
-					//log.Debugf("[Event] Finish sleep at %v", time.Now().Format("15:04:05.000000"))
-				} else {
-					log.Debugf("[Event] Should not sleep because bufsize %v at %v", bufSize, time.Now().Format("15:04:05.000000"))
-				}
-
 				ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 				burstTuple, qerr := burstQueue.DequeueOrWaitForNextElementContext(ctx)
 				if qerr != nil {
@@ -854,6 +844,12 @@ func (conn *wfganConn) ReadFromClient(r io.Reader) (written int64, err error) {
 				binary.BigEndian.PutUint32(payload[:], uint32(responseSize))
 				sendChan <- PacketInfo{pktType: packetTypeFinish, data: payload[:], padLen: uint16(maxPacketPaddingLength-4)}
 				log.Debugf("[ON] Response size %v", responseSize)
+
+				ipt := conn.sampleIPT()
+				log.Debugf("[Event] Should sleep %v at %v", ipt, time.Now().Format("15:04:05.000000"))
+				utils.SleepRho(time.Now(), ipt)
+				//log.Debugf("[Event] Finish sleep at %v", time.Now().Format("15:04:05.000000"))
+
 			} else {
 				//defense off (in stop or ready)
 				writtenTmp, werr := conn.sendRealBurst(&receiveBuf, sendChan)
