@@ -8,11 +8,11 @@ BASE_DIR = abspath(join(dirname(__file__), pardir))
 
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 latent_dim = 50
-seq_len = 1001
+seq_len = 1401
 class_dim = 100
 CELL_SIZE = 536 # a minimum cell size
-model_relpath = 'py/training_0629_010626/generator_seqlen1001_cls100_latentdim50.ckpt'
-scaler_relpath = 'py/training_0629_010626/scaler.gz'
+model_relpath = 'py/training_0721_165936/generator_seqlen1401_cls100_latentdim50.ckpt'
+scaler_relpath = 'py/training_0721_165936/scaler.gz'
 model_path = join(BASE_DIR, model_relpath)
 scaler_path = join(BASE_DIR, scaler_relpath)
 
