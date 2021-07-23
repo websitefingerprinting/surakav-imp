@@ -297,7 +297,7 @@ func (sf *frontServerFactory) WrapConn(conn net.Conn) (net.Conn, error) {
 	lenDist := probdist.New(sf.lenSeed, 0, framing.MaximumSegmentLength, false)
 	logger := &traceLogger{gRPCServer: grpc.NewServer(), logOn: nil, logPath: nil}
 	// The server's initial state is intentionally set to stateStart at the very beginning to obfuscate the RTT between client and server
-	c := &frontConn{conn, true, lenDist,  sf.wMin, sf.wMax, sf.nServer, sf.nClient,logger, stateStop, paddingChan, nil, bytes.NewBuffer(nil), bytes.NewBuffer(nil), make([]byte, consumeReadSize), nil, nil}
+	c := &frontConn{conn, true, lenDist,  sf.wMin, sf.wMax, sf.nServer, sf.nClient,0, 0, logger, stateStop, paddingChan, nil, bytes.NewBuffer(nil), bytes.NewBuffer(nil), make([]byte, consumeReadSize), nil, nil}
 	log.Debugf("Server pt con status: isServer: %v, w-min: %.1f, w-max: %.1f, n-server: %d, n-client: %d", c.isServer, c.wMin, c.wMax, c.nServer, c.nClient)
 	startTime := time.Now()
 
@@ -320,6 +320,9 @@ type frontConn struct {
 	wMax       float32     // in seconds
 	nServer    int
 	nClient    int
+
+	nRealSegSent  uint32 // real packet counter over tWindow second
+	nRealSegRcv   uint32
 
 	logger *traceLogger
 
@@ -360,7 +363,7 @@ func newfrontClientConn(conn net.Conn, args *frontClientArgs) (c *frontConn, err
 
 	pb.RegisterTraceLoggingServer(logger.gRPCServer, &traceLoggingServer{callBack:logger.UpdateLogInfo})
 	// Allocate the client structure.
-	c = &frontConn{conn, false, lenDist, args.wMin, args.wMax, args.nServer, args.nClient, logger, stateStop, paddingChan, loggerChan, bytes.NewBuffer(nil), bytes.NewBuffer(nil), make([]byte, consumeReadSize), nil, nil}
+	c = &frontConn{conn, false, lenDist, args.wMin, args.wMax, args.nServer, args.nClient, 0, 0, logger, stateStop, paddingChan, loggerChan, bytes.NewBuffer(nil), bytes.NewBuffer(nil), make([]byte, consumeReadSize), nil, nil}
 
 	log.Debugf("Client pt con status: isServer: %v, w-min: %.2f, w-max: %.2f, n-server: %d, n-client: %d", c.isServer, c.wMin, c.wMax, c.nServer, c.nClient)
 	// Start the handshake timeout.
@@ -565,7 +568,6 @@ func (conn *frontConn) ReadFrom(r io.Reader) (written int64, err error) {
 	errChan := make(chan error, 5)  // errors from all the go routines will be sent to this channel
 	sendChan := make(chan PacketInfo, 65535) // all packed packets are sent through this channel
 
-	var realNSeg uint32 = 0  // real packet counter over 1 second
 	var receiveBuf utils.SafeBuffer //read payload from upstream and buffer here
 	var frontInitTime atomic.Value
 	var tsQueue *queue.FixedFIFO // maintain a queue of timestamps sampled
@@ -731,14 +733,15 @@ func (conn *frontConn) ReadFrom(r io.Reader) (written int64, err error) {
 					return
 				}
 			case <- ticker.C:
-				//log.Debugf("NRealSeg %v at %v", realNSeg, time.Now().Format("15:04:05.000000"))
-				if !conn.isServer && atomic.LoadUint32(&conn.state) != stateStop && atomic.LoadUint32(&realNSeg) < 2 {
+				log.Debugf("[State] Real Sent: %v, Real Receive: %v, curState: %s at %v.", conn.nRealSegSent, conn.nRealSegRcv, stateMap[atomic.LoadUint32(&conn.state)], time.Now().Format("15:04:05.000000"))
+				if !conn.isServer && atomic.LoadUint32(&conn.state) != stateStop && (atomic.LoadUint32(&conn.nRealSegSent) < 2 || atomic.LoadUint32(&conn.nRealSegRcv) < 2) {
 					log.Infof("[State] %s -> %s.", stateMap[atomic.LoadUint32(&conn.state)], stateMap[stateStop])
 					atomic.StoreUint32(&conn.state, stateStop)
 					sendChan <- PacketInfo{pktType: packetTypeSignalStop, data: []byte{}, padLen: maxPacketPaddingLength}
 					conn.paddingChan <- false
 				}
-				atomic.StoreUint32(&realNSeg, 0) //reset counter
+				atomic.StoreUint32(&conn.nRealSegSent, 0) //reset counter
+				atomic.StoreUint32(&conn.nRealSegRcv, 0) //reset counter
 			}
 		}
 	}()
@@ -785,7 +788,7 @@ func (conn *frontConn) ReadFrom(r io.Reader) (written int64, err error) {
 					return written, rdErr
 				}
 				sendChan <- PacketInfo{pktType: packetTypePayload, data: payload[:rdLen], padLen: uint16(maxPacketPaddingLength-rdLen)}
-				atomic.AddUint32(&realNSeg, 1)
+				atomic.AddUint32(&conn.nRealSegSent, 1)
 			}
 		}
 	}

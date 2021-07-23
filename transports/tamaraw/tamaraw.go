@@ -248,7 +248,7 @@ type tamarawServerFactory struct {
 	nSeg        int
 	rhoServer    int
 	rhoClient    int
-	
+
 	replayFilter *replayfilter.ReplayFilter
 	closeDelay int
 }
@@ -278,7 +278,7 @@ func (sf *tamarawServerFactory) WrapConn(conn net.Conn) (net.Conn, error) {
 	lenDist := probdist.New(sf.lenSeed, 0, framing.MaximumSegmentLength, false)
 	logger := &traceLogger{gRPCServer: grpc.NewServer(), logOn: nil, logPath: nil}
 	// The server's initial state is intentionally set to stateStart at the very beginning to obfuscate the RTT between client and server
-	c := &tamarawConn{conn, true, lenDist,  sf.nSeg, sf.rhoClient, sf.rhoServer, logger, stateStop, nil, bytes.NewBuffer(nil), bytes.NewBuffer(nil), make([]byte, consumeReadSize), nil, nil}
+	c := &tamarawConn{conn, true, lenDist,  sf.nSeg, sf.rhoClient, sf.rhoServer, 0, 0, logger, stateStop, nil, bytes.NewBuffer(nil), bytes.NewBuffer(nil), make([]byte, consumeReadSize), nil, nil}
 	log.Debugf("Server pt con status: %v %v %v %v", c.isServer, c.nSeg, c.rhoClient, c.rhoServer)
 	startTime := time.Now()
 
@@ -300,6 +300,9 @@ type tamarawConn struct {
 	nSeg       int
 	rhoClient  int
 	rhoServer  int
+
+	nRealSegSent  uint32 // real packet counter over tWindow second
+	nRealSegRcv   uint32
 
 	logger *traceLogger
 
@@ -339,7 +342,7 @@ func newTamarawClientConn(conn net.Conn, args *tamarawClientArgs) (c *tamarawCon
 	pb.RegisterTraceLoggingServer(logger.gRPCServer, &traceLoggingServer{callBack:logger.UpdateLogInfo})
 
 	// Allocate the client structure.
-	c = &tamarawConn{conn, false, lenDist, args.nSeg, args.rhoClient, args.rhoServer, logger, stateStop, loggerChan, bytes.NewBuffer(nil), bytes.NewBuffer(nil), make([]byte, consumeReadSize), nil, nil}
+	c = &tamarawConn{conn, false, lenDist, args.nSeg, args.rhoClient, args.rhoServer, 0, 0, logger, stateStop, loggerChan, bytes.NewBuffer(nil), bytes.NewBuffer(nil), make([]byte, consumeReadSize), nil, nil}
 
 	log.Debugf("client pt con status: %v %v %v %v", c.isServer, c.nSeg, c.rhoClient, c.rhoServer)
 	// Start the handshake timeout.
@@ -520,7 +523,6 @@ func (conn *tamarawConn) ReadFrom(r io.Reader) (written int64, err error) {
 	}
 
 	var curNSeg uint32 = 0
-	var realNSeg uint32 = 0 //the number of real packets over the latest windowSize time
 	sendChan := make(chan PacketInfo, 65535) // all packed packets are sent through this channel
 	var receiveBuf bytes.Buffer
 
@@ -664,8 +666,8 @@ func (conn *tamarawConn) ReadFrom(r io.Reader) (written int64, err error) {
 				}
 			case <- ticker.C:
 				curState := atomic.LoadUint32(&conn.state)
-				//log.Debugf("[Event] NRealSeg %v at %v", realNSeg, time.Now().Format("15:04:05.000000"))
-				if !conn.isServer && curState != stateStop && atomic.LoadUint32(&realNSeg) < 2 {
+				log.Debugf("[State] Real Sent: %v, Real Receive: %v, curState: %s at %v.", conn.nRealSegSent, conn.nRealSegRcv, stateMap[atomic.LoadUint32(&conn.state)], time.Now().Format("15:04:05.000000"))
+				if !conn.isServer && curState != stateStop && (atomic.LoadUint32(&conn.nRealSegSent) < 2 || atomic.LoadUint32(&conn.nRealSegRcv) < 2){
 					// if throughput is small, change client's state:
 					// stateReady -> stateStop
 					// stateStart -> statePadding
@@ -677,7 +679,8 @@ func (conn *tamarawConn) ReadFrom(r io.Reader) (written int64, err error) {
 						log.Debugf("[State] %-12s->%-12s", stateMap[curState], stateMap[statePadding])
 					}
 				}
-				atomic.StoreUint32(&realNSeg, 0) //reset counter
+				atomic.StoreUint32(&conn.nRealSegSent, 0) //reset counter
+				atomic.StoreUint32(&conn.nRealSegRcv, 0) //reset counter
 			}
 		}
 	}()
@@ -710,7 +713,7 @@ func (conn *tamarawConn) ReadFrom(r io.Reader) (written int64, err error) {
 					return written, rdErr
 				}
 				sendChan <- PacketInfo{pktType: packetTypePayload, data: payload[:rdLen], padLen: uint16(maxPacketPaddingLength-rdLen)}
-				atomic.AddUint32(&realNSeg, 1)
+				atomic.AddUint32(&conn.nRealSegSent, 1)
 			}
 		}
 	}
