@@ -890,13 +890,20 @@ func (conn *wfganConn) sendRefBurst(refBurstSize uint32, receiveBuf *utils.SafeB
 
 	var toSend int
 	bufSize := receiveBuf.GetLen()
-	if bufSize < lowerBound {
-		toSend = lowerBound
-	} else if bufSize < upperBound {
-		toSend = bufSize
+
+	if conn.isServer {
+		if bufSize < lowerBound {
+			toSend = lowerBound
+		} else if bufSize < upperBound {
+			toSend = bufSize
+		} else {
+			toSend = upperBound
+		}
 	} else {
+		//TODO: trial -> client always send upper bound
 		toSend = upperBound
 	}
+
 
 	log.Debugf("[ON] Ref: %v bytes, lower: %v bytes, upper: %v bytes, bufSize: %v, toSend: %v bytes at %v", refBurstSize, lowerBound, upperBound, bufSize, toSend, time.Now().Format("15:04:05.000000"))
 	for toSend >= maxPacketPayloadLength {
