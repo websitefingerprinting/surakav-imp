@@ -629,7 +629,7 @@ func (conn *wfganConn) ReadFromServer(r io.Reader) (written int64, err error) {
 				}
 			} else {
 				//defense on
-				skipRespond := utils.Bernoulli(float64(conn.p))
+				skipRespond := utils.RandomBernoulli(float64(conn.p))
 				if receiveBuf.GetLen() == 0 && skipRespond == 1 {
 					log.Infof("[Event] No data in buffer and get 1, skip this response.")
 					continue

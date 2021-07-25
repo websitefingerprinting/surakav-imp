@@ -16,13 +16,14 @@ func TestReadFloatFromFile(t *testing.T) {
 	}
 }
 
-func TestBernoulli(t *testing.T) {
-	p := 0.8
-	arr := [5000]int{}
+func TestRandomBernoulli(t *testing.T) {
+	p := 0.4
+	arr := [1000]int{}
 	sum := 0.0
 	for i:=0; i<len(arr); i++ {
-		arr[i] = Bernoulli(p)
+		arr[i] = RandomBernoulli(p)
 		sum += float64(arr[i]) / float64(len(arr))
 	}
 	fmt.Printf("%.2f\n", sum)
 }
+

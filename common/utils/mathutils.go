@@ -30,12 +30,21 @@ func IntAbs(a int) int {
 	return a
 }
 
-func Bernoulli(p float64) int {
-	dist := distuv.Bernoulli{
-		P:   p,
+func RandomBernoulli(p float64) int {
+	betaDist := distuv.Beta{
+		Alpha: p * 10.0 + 1,
+		Beta: (1-p) * 10.0 + 1,
 		Src: expRand.NewSource(uint64(time.Now().UTC().UnixNano())),
 	}
-	return int(dist.Rand())
+
+	randomP := betaDist.Rand()
+	//fmt.Printf("%v\n", randomP)
+
+	berDist := distuv.Bernoulli{
+		P:   randomP,
+		Src: expRand.NewSource(uint64(time.Now().UTC().UnixNano())),
+	}
+	return int(berDist.Rand())
 }
 
 func Uniform(min int, max int) int {
