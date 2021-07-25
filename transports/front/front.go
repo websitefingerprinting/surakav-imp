@@ -82,7 +82,7 @@ const (
 	replayTTL              = time.Duration(3) * time.Hour
 
 	maxCloseDelay      = 60
-	tWindow            = 1000 * time.Millisecond
+	tWindow            = 4000 * time.Millisecond
 
 	gRPCAddr           = "localhost:10086"
 	traceLogEnabled    = false
@@ -723,7 +723,7 @@ func (conn *frontConn) ReadFrom(r io.Reader) (written int64, err error) {
 	// this go routine regularly check the real throughput
 	// if it is small, change to stop state
 	go func() {
-		ticker := time.NewTicker(time.Second)
+		ticker := time.NewTicker(tWindow)
 		defer ticker.Stop()
 		for{
 			select{
