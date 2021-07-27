@@ -288,7 +288,7 @@ func (sf *wfganServerFactory) WrapConn(conn net.Conn) (net.Conn, error) {
 	iptList := sf.iptList
 
 	// The server's initial state is intentionally set to stateStart at the very beginning to obfuscate the RTT between client and server
-	c := &wfganConn{conn, true, lenDist, sf.tol, sf.p, stateStop, 0, 0,canSendChan, bytes.NewBuffer(nil), bytes.NewBuffer(nil), make([]byte, consumeReadSize), iptList, nil, nil}
+	c := &wfganConn{conn, true, lenDist, sf.tol, sf.p, float64(sf.p), stateStop, 0, 0,canSendChan, bytes.NewBuffer(nil), bytes.NewBuffer(nil), make([]byte, consumeReadSize), iptList, nil, nil}
 	log.Debugf("Server pt con status: isServer: %v, tol: %.1f, p: %.1f", c.isServer, c.tol, c.p)
 	startTime := time.Now()
 
@@ -309,7 +309,8 @@ type wfganConn struct {
 
 	lenDist   *probdist.WeightedDist
 	tol       float32
-	p         float32    // the probability of proxy **not** to respond with a fake burst
+	p         float32    // the hyper param used to generate randomP
+	randomP   float64    // the sampled p for each trace, i.e., the probability of proxy **not** to respond with a fake burst
 	state     uint32
 	nRealSegSent  uint32 // real packet counter over tWindow second
 	nRealSegRcv   uint32
@@ -346,7 +347,7 @@ func newWfganClientConn(conn net.Conn, args *wfganClientArgs) (c *wfganConn, err
 	iptList := utils.ReadFloatFromFile(path.Join(parPath, o2oRelPath))
 
 	// Allocate the client structure.
-	c = &wfganConn{conn, false, lenDist, args.tol, args.p, stateStop, 0, 0,nil, bytes.NewBuffer(nil), bytes.NewBuffer(nil), make([]byte, consumeReadSize), &iptList, nil, nil}
+	c = &wfganConn{conn, false, lenDist, args.tol, args.p, float64(args.p), stateStop, 0, 0,nil, bytes.NewBuffer(nil), bytes.NewBuffer(nil), make([]byte, consumeReadSize), &iptList, nil, nil}
 	log.Debugf("Client pt con status: isServer: %v, tol: %.1f, p: %.1f", c.isServer, c.tol, c.p)
 	// Start the handshake timeout.
 	deadline := time.Now().Add(clientHandshakeTimeout)
@@ -528,7 +529,6 @@ func (conn *wfganConn) ReadFromServer(r io.Reader) (written int64, err error) {
 	errChan := make(chan error, 5)  // errors from all the go routines will be sent to this channel
 	sendChan := make(chan PacketInfo, 10000) // all packed packets are sent through this channel
 
-
 	var receiveBuf utils.SafeBuffer //read payload from upstream and buffer here
 
 	//create a go routine to send out packets to the wire
@@ -629,7 +629,7 @@ func (conn *wfganConn) ReadFromServer(r io.Reader) (written int64, err error) {
 				}
 			} else {
 				//defense on
-				skipRespond := utils.RandomBernoulli(float64(conn.p))
+				skipRespond := utils.Bernoulli(conn.randomP)
 				if receiveBuf.GetLen() == 0 && skipRespond == 1 {
 					log.Infof("[Event] No data in buffer and get 1, skip this response.")
 					continue
@@ -873,7 +873,7 @@ func (conn *wfganConn) sampleIPT() time.Duration {
 	//}
 	var ipt float64
 	if len(*conn.iptList) == 0 {
-		log.Debugf("iptList is not given, return 0.")
+		//log.Debugf("iptList is not given, return 0.")
 		ipt = 0
 	} else {
 		ipt = utils.SampleIPT(*conn.iptList)

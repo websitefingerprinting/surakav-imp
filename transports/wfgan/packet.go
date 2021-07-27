@@ -31,6 +31,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"github.com/websitefingerprinting/wfdef.git/common/log"
+	"github.com/websitefingerprinting/wfdef.git/common/utils"
 	"io"
 	"sync/atomic"
 	"time"
@@ -187,8 +188,10 @@ func (conn *wfganConn) readPackets() (err error) {
 				panic(fmt.Sprintf("Client receive SignalStart pkt from server? "))
 			}
 			if atomic.LoadUint32(&conn.state) != stateStart {
+				conn.randomP = utils.Beta(float64(conn.p))
 				log.Debugf("[State] Client signal: %s -> %s.", stateMap[atomic.LoadUint32(&conn.state)], stateMap[stateStart])
 				atomic.StoreUint32(&conn.state, stateStart)
+				log.Debugf("[State] Random P is %.2f", conn.randomP)
 			}
 		case packetTypeSignalStop:
 			// a signal from client to make server change to stateStop

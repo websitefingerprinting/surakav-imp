@@ -39,7 +39,7 @@ func Bernoulli(p float64) int {
 	return int(berDist.Rand())
 }
 
-func RandomBernoulli(p float64) int {
+func Beta(p float64) float64 {
 	//First sample a p from Beta distribution, then sample a number from B(p)
 	betaDist := distuv.Beta{
 		Alpha: p * 10.0 + 1,
@@ -47,9 +47,7 @@ func RandomBernoulli(p float64) int {
 		Src: expRand.NewSource(uint64(time.Now().UTC().UnixNano())),
 	}
 
-	randomP := betaDist.Rand()
-	//fmt.Printf("%v\n", randomP)
-	return Bernoulli(randomP)
+	return betaDist.Rand()
 }
 
 func Uniform(min int, max int) int {
