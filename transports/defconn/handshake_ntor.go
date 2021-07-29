@@ -25,7 +25,7 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
-package tamaraw
+package defconn
 
 import (
 	"bytes"
@@ -41,7 +41,7 @@ import (
 	"github.com/websitefingerprinting/wfdef.git/common/csrand"
 	"github.com/websitefingerprinting/wfdef.git/common/ntor"
 	"github.com/websitefingerprinting/wfdef.git/common/replayfilter"
-	"github.com/websitefingerprinting/wfdef.git/transports/tamaraw/framing"
+	"github.com/websitefingerprinting/wfdef.git/transports/defconn/framing"
 )
 
 const (
@@ -61,7 +61,7 @@ const (
 	markLength = sha256.Size / 2
 	macLength  = sha256.Size / 2
 
-	inlineSeedFrameLength = framing.FrameOverhead + packetOverhead + seedPacketPayloadLength
+	inlineSeedFrameLength = framing.FrameOverhead + PacketOverhead + SeedPacketPayloadLength
 )
 
 // ErrMarkNotFoundYet is the error returned when the obfs4 handshake is

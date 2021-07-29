@@ -112,3 +112,16 @@ func EstimateTCPCapacity(conn net.Conn) (capacity int, err error){
 
 	return 0, err
 }
+
+
+func GetIntArgFromStr(argName string, args *pt.Args) (interface {}, error) {
+	argStr, argOK := args.Get(argName)
+	if !argOK {
+		return nil, fmt.Errorf("missing argument '%s'", argName)
+	}
+	argValue, err := strconv.Atoi(argStr)
+	if err != nil {
+		return nil, fmt.Errorf("malformed nseg '%s'", argStr)
+	}
+	return argValue, nil
+}

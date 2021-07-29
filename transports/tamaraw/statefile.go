@@ -28,114 +28,45 @@
 package tamaraw
 
 import (
-	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"git.torproject.org/pluggable-transports/goptlib.git"
-	"github.com/websitefingerprinting/wfdef.git/common/csrand"
-	"github.com/websitefingerprinting/wfdef.git/common/drbg"
-	"github.com/websitefingerprinting/wfdef.git/common/ntor"
-	"io/ioutil"
-	"os"
-	"path"
+	"github.com/websitefingerprinting/wfdef.git/transports/defconn"
 	"strconv"
-	"strings"
 )
 
-const (
-	stateFile  = "tamaraw_state.json"
-	bridgeFile = "tamaraw_bridgeline.txt"
-
-	certSuffix = "=="
-	certLength = ntor.NodeIDLength + ntor.PublicKeyLength
-)
 
 type jsonServerState struct {
-	NodeID     string         `json:"node-id"`
-	PrivateKey string         `json:"private-key"`
-	PublicKey  string         `json:"public-key"`
-	DrbgSeed   string         `json:"drbg-seed"`
+	defconn.JsonServerState
 	NSeg       int            `json:"nseg"`
 	RhoServer  int            `json:"rho-server"`
 	RhoClient  int            `json:"rho-client"`
 }
 
-type tamarawServerCert struct {
-	raw []byte
-}
-
-func (cert *tamarawServerCert) String() string {
-	return strings.TrimSuffix(base64.StdEncoding.EncodeToString(cert.raw), certSuffix)
-}
-
-func (cert *tamarawServerCert) unpack() (*ntor.NodeID, *ntor.PublicKey) {
-	if len(cert.raw) != certLength {
-		panic(fmt.Sprintf("cert length %d is invalid", len(cert.raw)))
-	}
-
-	nodeID, _ := ntor.NewNodeID(cert.raw[:ntor.NodeIDLength])
-	pubKey, _ := ntor.NewPublicKey(cert.raw[ntor.NodeIDLength:])
-
-	return nodeID, pubKey
-}
-
-func serverCertFromString(encoded string) (*tamarawServerCert, error) {
-	decoded, err := base64.StdEncoding.DecodeString(encoded + certSuffix)
-	if err != nil {
-		return nil, fmt.Errorf("failed to decode cert: %s", err)
-	}
-
-	if len(decoded) != certLength {
-		return nil, fmt.Errorf("cert length %d is invalid", len(decoded))
-	}
-
-	return &tamarawServerCert{raw: decoded}, nil
-}
-
-func serverCertFromState(st *tamarawServerState) *tamarawServerCert {
-	cert := new(tamarawServerCert)
-	cert.raw = append(st.nodeID.Bytes()[:], st.identityKey.Public().Bytes()[:]...)
-	return cert
-}
 
 type tamarawServerState struct {
-	nodeID      *ntor.NodeID
-	identityKey *ntor.Keypair
-	drbgSeed    *drbg.Seed
+	defconn.DefConnServerState
 	nSeg        int
 	rhoServer   int
 	rhoClient   int
-	cert        *tamarawServerCert
 }
 
 func (st *tamarawServerState) clientString() string {
-	return fmt.Sprintf("%s=%s %s=%d %s=%d %s=%d", certArg, st.cert, nSegArg, st.nSeg,
-		rhoServerArg, st.rhoServer, rhoClientArg, st.rhoClient)
+	return st.DefConnServerState.ClientString() +
+		fmt.Sprintf("%s=%d %s=%d %s=%d", nSegArg, st.nSeg, rhoServerArg, st.rhoServer, rhoClientArg, st.rhoClient)
 }
 
 func serverStateFromArgs(stateDir string, args *pt.Args) (*tamarawServerState, error) {
-	var js jsonServerState
-	var nodeIDOk, privKeyOk, seedOk bool
-	js.NodeID, nodeIDOk = args.Get(nodeIDArg)
-	js.PrivateKey, privKeyOk = args.Get(privateKeyArg)
-	js.DrbgSeed, seedOk = args.Get(seedArg)
+	js, err := defconn.ServerStateFromArgsInternal(stateDir, defconn.StateFile, args)
+	if err != nil {
+		return nil, err
+	}
+
 	nSegStr, nSegOk := args.Get(nSegArg)
 	rhoClientStr, rhoClientOk := args.Get(rhoClientArg)
 	rhoServerStr, rhoServerOk := args.Get(rhoServerArg)
 
-	// Either a private key, node id, and seed are ALL specified, or
-	// they should be loaded from the state file.
-	if !privKeyOk && !nodeIDOk && !seedOk {
-		if err := jsonServerStateFromFile(stateDir, &js); err != nil {
-			return nil, err
-		}
-	} else if !privKeyOk {
-		return nil, fmt.Errorf("missing argument '%s'", privateKeyArg)
-	} else if !nodeIDOk {
-		return nil, fmt.Errorf("missing argument '%s'", nodeIDArg)
-	} else if !seedOk {
-		return nil, fmt.Errorf("missing argument '%s'", seedArg)
-	}
+	var jsTamaraw jsonServerState
+	jsTamaraw.JsonServerState = js
 
 	// The tamaraw params should be independently configurable.
 	if nSegOk {
@@ -143,7 +74,7 @@ func serverStateFromArgs(stateDir string, args *pt.Args) (*tamarawServerState, e
 		if err != nil {
 			return nil, fmt.Errorf("malformed nseg '%s'", nSegStr)
 		}
-		js.NSeg = nSeg
+		jsTamaraw.NSeg = nSeg
 	} else {
 		return nil, fmt.Errorf("missing argument '%s'", nSegArg)
 	}
@@ -153,7 +84,7 @@ func serverStateFromArgs(stateDir string, args *pt.Args) (*tamarawServerState, e
 		if err != nil {
 			return nil, fmt.Errorf("malformed rho-client '%s'", rhoClientStr)
 		}
-		js.RhoClient = rhoClientInt
+		jsTamaraw.RhoClient = rhoClientInt
 	} else {
 		return nil, fmt.Errorf("missing argument '%s'", rhoClientArg)
 	}
@@ -163,26 +94,16 @@ func serverStateFromArgs(stateDir string, args *pt.Args) (*tamarawServerState, e
 		if err != nil {
 			return nil, fmt.Errorf("malformed rho-server '%s'", rhoServerStr)
 		}
-		js.RhoServer = rhoServerInt
+		jsTamaraw.RhoServer = rhoServerInt
 	} else {
 		return nil, fmt.Errorf("missing argument '%s'", rhoServerArg)
 	}
-	return serverStateFromJSONServerState(stateDir, &js)
+	return serverStateFromJSONServerState(stateDir, &jsTamaraw)
 }
 
 func serverStateFromJSONServerState(stateDir string, js *jsonServerState) (*tamarawServerState, error) {
-	var err error
+	st, err := defconn.ServerStateFromJsonServerStateInternal(js)
 
-	st := new(tamarawServerState)
-	if st.nodeID, err = ntor.NodeIDFromHex(js.NodeID); err != nil {
-		return nil, err
-	}
-	if st.identityKey, err = ntor.KeypairFromHex(js.PrivateKey); err != nil {
-		return nil, err
-	}
-	if st.drbgSeed, err = drbg.SeedFromHex(js.DrbgSeed); err != nil {
-		return nil, err
-	}
 	if js.NSeg < 0 {
 		return nil, fmt.Errorf("invalid nseg '%d'", js.NSeg)
 	}
@@ -192,100 +113,25 @@ func serverStateFromJSONServerState(stateDir string, js *jsonServerState) (*tama
 	if js.RhoClient < 0 {
 		return nil, fmt.Errorf("invalid rho-client '%d'", js.RhoClient)
 	}
-	// time unit ms
-	st.nSeg = js.NSeg
-	st.rhoServer = js.RhoServer
-	st.rhoClient = js.RhoClient
 
-	st.cert = serverCertFromState(st)
+	var stTamaraw tamarawServerState
+
+	stTamaraw.DefConnServerState = st
+
+	// time unit ms
+	stTamaraw.nSeg = js.NSeg
+	stTamaraw.rhoServer = js.RhoServer
+	stTamaraw.rhoClient = js.RhoClient
 
 	// Generate a human readable summary of the configured endpoint.
-	if err = newBridgeFile(stateDir, st); err != nil {
+	if err = defconn.NewBridgeFile(stateDir, defconn.BridgeFile, stTamaraw.clientString()); err != nil {
 		return nil, err
 	}
 
 	// Write back the possibly updated server state.
-	return st, writeJSONServerState(stateDir, js)
+	return &stTamaraw, defconn.WriteJSONServerState(stateDir, defconn.StateFile, js)
 }
 
-func jsonServerStateFromFile(stateDir string, js *jsonServerState) error {
-	fPath := path.Join(stateDir, stateFile)
-	f, err := ioutil.ReadFile(fPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			if err = newJSONServerState(stateDir, js); err == nil {
-				return nil
-			}
-		}
-		return err
-	}
 
-	if err := json.Unmarshal(f, js); err != nil {
-		return fmt.Errorf("failed to load statefile '%s': %s", fPath, err)
-	}
 
-	return nil
-}
 
-func newJSONServerState(stateDir string, js *jsonServerState) (err error) {
-	// Generate everything a server needs, using the cryptographic PRNG.
-	var st tamarawServerState
-	rawID := make([]byte, ntor.NodeIDLength)
-	if err = csrand.Bytes(rawID); err != nil {
-		return
-	}
-	if st.nodeID, err = ntor.NewNodeID(rawID); err != nil {
-		return
-	}
-	if st.identityKey, err = ntor.NewKeypair(false); err != nil {
-		return
-	}
-	if st.drbgSeed, err = drbg.NewSeed(); err != nil {
-		return
-	}
-
-	// Encode it into JSON format and write the state file.
-	js.NodeID = st.nodeID.Hex()
-	js.PrivateKey = st.identityKey.Private().Hex()
-	js.PublicKey = st.identityKey.Public().Hex()
-	js.DrbgSeed = st.drbgSeed.Hex()
-
-	return writeJSONServerState(stateDir, js)
-}
-
-func writeJSONServerState(stateDir string, js *jsonServerState) error {
-	var err error
-	var encoded []byte
-	if encoded, err = json.Marshal(js); err != nil {
-		return err
-	}
-	if err = ioutil.WriteFile(path.Join(stateDir, stateFile), encoded, 0600); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func newBridgeFile(stateDir string, st *tamarawServerState) error {
-	const prefix = "# tamaraw torrc client bridge line\n" +
-		"#\n" +
-		"# This file is an automatically generated bridge line based on\n" +
-		"# the current tamarawproxy configuration.  EDITING IT WILL HAVE\n" +
-		"# NO EFFECT.\n" +
-		"#\n" +
-		"# Before distributing this Bridge, edit the placeholder fields\n" +
-		"# to contain the actual values:\n" +
-		"#  <IP ADDRESS>  - The public IP address of your tamaraw bridge.\n" +
-		"#  <PORT>        - The TCP/IP port of your tamaraw bridge.\n" +
-		"#  <FINGERPRINT> - The bridge's fingerprint.\n\n"
-
-	bridgeLine := fmt.Sprintf("Bridge tamaraw <IP ADDRESS>:<PORT> <FINGERPRINT> %s\n",
-		st.clientString())
-
-	tmp := []byte(prefix + bridgeLine)
-	if err := ioutil.WriteFile(path.Join(stateDir, bridgeFile), tmp, 0600); err != nil {
-		return err
-	}
-
-	return nil
-}

@@ -31,6 +31,7 @@ package transports // import "github.com/websitefingerprinting/wfdef.git/transpo
 
 import (
 	"fmt"
+	"github.com/websitefingerprinting/wfdef.git/transports/defconn"
 	"github.com/websitefingerprinting/wfdef.git/transports/front"
 	"github.com/websitefingerprinting/wfdef.git/transports/null"
 	"github.com/websitefingerprinting/wfdef.git/transports/randomwt"
@@ -100,6 +101,7 @@ func Init() error {
 		new(front.Transport),
 		new(randomwt.Transport),
 		new(null.Transport),
+		new(defconn.Transport),
 	} {
 		if err := Register(v); err != nil {
 			return err

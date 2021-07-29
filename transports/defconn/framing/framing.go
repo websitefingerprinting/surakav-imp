@@ -58,14 +58,16 @@
 // and the initial counter value.  It is imperative that the counter does not
 // wrap, and sessions MUST terminate before 2^64 frames are sent.
 //
-package framing // import "github.com/websitefingerprinting/wfdef.git/transports/tamaraw/framing"
+package framing // import "github.com/websitefingerprinting/wfdef.git/transports/defconn/framing"
 
 import (
 	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"github.com/websitefingerprinting/wfdef.git/common/log"
 	"io"
+	"time"
 
 	"github.com/websitefingerprinting/wfdef.git/common/csrand"
 	"github.com/websitefingerprinting/wfdef.git/common/drbg"
@@ -275,6 +277,7 @@ func (decoder *Decoder) Decode(data []byte, frames *bytes.Buffer) (int, error) {
 			// paper.
 
 			decoder.nextLengthInvalid = true
+			log.Errorf("Wrong decode pkt length :%v at time %v", length, time.Now().Format("15:04:05.000000"))
 			length = uint16(csrand.IntRange(minFrameLength, maxFrameLength))
 		}
 		decoder.nextLength = length

@@ -25,7 +25,7 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
-package tamaraw
+package defconn
 
 import (
 	"encoding/binary"
@@ -36,39 +36,33 @@ import (
 	"time"
 
 	"github.com/websitefingerprinting/wfdef.git/common/drbg"
-	"github.com/websitefingerprinting/wfdef.git/transports/tamaraw/framing"
+	"github.com/websitefingerprinting/wfdef.git/transports/defconn/framing"
 )
 
 const (
-	packetOverhead          = 2 + 1
-	//maxPacketPayloadLength  = framing.MaximumFramePayloadLength - packetOverhead
-	maxPacketPayloadLength  = 536 //size of a Tor cell wrapped by TLS
-	maxPacketPaddingLength  = maxPacketPayloadLength
-	seedPacketPayloadLength = seedLength
+	PacketOverhead = 2 + 1
+	//MaxPacketPayloadLength  = framing.MaximumFramePayloadLength - PacketOverhead
+	MaxPacketPayloadLength  = 536 //size of a Tor cell wrapped by TLS
+	MaxPacketPaddingLength  = MaxPacketPayloadLength
+	SeedPacketPayloadLength = seedLength
 
-	consumeReadSize = framing.MaximumSegmentLength * 16
+	ConsumeReadSize = framing.MaximumSegmentLength * 16
 )
 
 const (
-	packetTypePayload = iota
-	packetTypeDummy
-	packetTypePrngSeed
-	packetTypeSignalStart
-	packetTypeSignalStop
+	PacketTypePayload = iota
+	PacketTypeDummy
+	PacketTypePrngSeed
+	PacketTypeSignalStart
+	PacketTypeSignalStop
 )
 
 var pktTypeMap = map[uint8]string {
-	packetTypePayload:      "Payload",
-	packetTypeDummy:        "Dummy",
-	packetTypePrngSeed:     "PrngSeed",
-	packetTypeSignalStart:  "SigStart",
-	packetTypeSignalStop:   "SigStop",
-}
-
-type PacketInfo struct {
-	pktType  uint8
-	data     []byte
-	padLen   uint16
+	PacketTypePayload:     "Payload",
+	PacketTypeDummy:       "Dummy",
+	PacketTypePrngSeed:    "PrngSeed",
+	PacketTypeSignalStart: "SigStart",
+	PacketTypeSignalStop:  "SigStop",
 }
 
 // InvalidPacketLengthError is the error returned when decodePacket detects a
@@ -83,22 +77,28 @@ func (e InvalidPacketLengthError) Error() string {
 // payload length.
 type InvalidPayloadLengthError int
 
+type PacketInfo struct {
+	PktType uint8
+	Data    []byte
+	PadLen  uint16
+}
+
 func (e InvalidPayloadLengthError) Error() string {
 	return fmt.Sprintf("packet: Invalid payload length: %d", int(e))
 }
 
-var zeroPadBytes [maxPacketPaddingLength]byte
+var zeroPadBytes [MaxPacketPaddingLength]byte
 
-func (conn *tamarawConn) makePacket(w io.Writer, pktType uint8, data []byte, padLen uint16) error {
+func (conn *DefConn) MakePacket(w io.Writer, pktType uint8, data []byte, padLen uint16) error {
 	var pkt [framing.MaximumFramePayloadLength]byte
 
-	if len(data)+int(padLen) > maxPacketPayloadLength {
-		panic(fmt.Sprintf("BUG: makePacket() len(data) + padLen > maxPacketPayloadLength: %d + %d > %d",
-			len(data), padLen, maxPacketPayloadLength))
+	if len(data)+int(padLen) > MaxPacketPayloadLength {
+		panic(fmt.Sprintf("BUG: MakePacket() len(Data) + PadLen > MaxPacketPayloadLength: %d + %d > %d",
+			len(data), padLen, MaxPacketPayloadLength))
 	}
 
 	// Packets are:
-	//   uint8_t type      packetTypePayload (0x00)
+	//   uint8_t type      PacketTypePayload (0x00)
 	//   uint16_t length   Length of the payload (Big Endian).
 	//   uint8_t[] payload Data payload.
 	//   uint8_t[] padding Padding.
@@ -109,13 +109,13 @@ func (conn *tamarawConn) makePacket(w io.Writer, pktType uint8, data []byte, pad
 	}
 	copy(pkt[3+len(data):], zeroPadBytes[:padLen])
 
-	pktLen := packetOverhead + len(data) + int(padLen)
+	pktLen := PacketOverhead + len(data) + int(padLen)
 
 	// Encode the packet in an AEAD frame.
 	var frame [framing.MaximumSegmentLength]byte
-	frameLen, err := conn.encoder.Encode(frame[:], pkt[:pktLen])
+	frameLen, err := conn.Encoder.Encode(frame[:], pkt[:pktLen])
 	if err != nil {
-		// All encoder errors are fatal.
+		// All Encoder errors are fatal.
 		return err
 	}
 	wrLen, err := w.Write(frame[:frameLen])
@@ -128,21 +128,21 @@ func (conn *tamarawConn) makePacket(w io.Writer, pktType uint8, data []byte, pad
 	return nil
 }
 
-func (conn *tamarawConn) readPackets() (err error) {
+func (conn *DefConn) ReadPackets() (err error) {
 	// Attempt to read off the network.
-	rdLen, rdErr := conn.Conn.Read(conn.readBuffer)
-	conn.receiveBuffer.Write(conn.readBuffer[:rdLen])
+	rdLen, rdErr := conn.Conn.Read(conn.ReadBuffer)
+	conn.ReceiveBuffer.Write(conn.ReadBuffer[:rdLen])
 
 	var decoded [framing.MaximumFramePayloadLength]byte
-	for conn.receiveBuffer.Len() > 0 {
+	for conn.ReceiveBuffer.Len() > 0 {
 		// Decrypt an AEAD frame.
 		decLen := 0
-		decLen, err = conn.decoder.Decode(decoded[:], conn.receiveBuffer)
+		decLen, err = conn.Decoder.Decode(decoded[:], conn.ReceiveBuffer)
 		if err == framing.ErrAgain {
 			break
 		} else if err != nil {
 			break
-		} else if decLen < packetOverhead {
+		} else if decLen < PacketOverhead {
 			err = InvalidPacketLengthError(decLen)
 			break
 		}
@@ -151,53 +151,54 @@ func (conn *tamarawConn) readPackets() (err error) {
 		pkt := decoded[0:decLen]
 		pktType := pkt[0]
 		payloadLen := binary.BigEndian.Uint16(pkt[1:])
-		if int(payloadLen) > len(pkt)-packetOverhead {
+		if int(payloadLen) > len(pkt)-PacketOverhead {
 			err = InvalidPayloadLengthError(int(payloadLen))
 			break
 		}
 		payload := pkt[3 : 3+payloadLen]
 
 
-		if !conn.isServer && traceLogEnabled && conn.logger.logOn.Load().(bool) && pktType != packetTypePrngSeed{
-			conn.loggerChan <- []int64{time.Now().UnixNano(), -int64(payloadLen), -(int64(decLen - packetOverhead) - int64(payloadLen))}
-		}
-		if !conn.isServer && pktType != packetTypePrngSeed && logEnabled{
-			log.Infof("[TRACE_LOG] %d %d %d", time.Now().UnixNano(),  -int64(payloadLen), -(int64(decLen - packetOverhead) - int64(payloadLen)))
+		if !conn.IsServer && pktType != PacketTypePrngSeed && LogEnabled {
+			log.Infof("[TRACE_LOG] %d %d %d", time.Now().UnixNano(), -int64(payloadLen), -(int64(decLen -PacketOverhead) - int64(payloadLen)))
 		}
 
 		switch pktType {
-		case packetTypePayload:
+		case PacketTypePayload:
 			if payloadLen > 0 {
-				conn.receiveDecodedBuffer.Write(payload)
-				if !conn.isServer {
-					atomic.AddUint32(&conn.nRealSegRcv, 1)
+				conn.ReceiveDecodedBuffer.Write(payload)
+				if !conn.IsServer {
+					atomic.AddUint32(&conn.NRealSegRcv, 1)
 				}
 			}
-		case packetTypePrngSeed:
+		case PacketTypePrngSeed:
 			// Only regenerate the distribution if we are the client.
-			if len(payload) == seedPacketPayloadLength && !conn.isServer {
+			if len(payload) == SeedPacketPayloadLength && !conn.IsServer {
 				var seed *drbg.Seed
 				seed, err = drbg.SeedFromBytes(payload)
 				if err != nil {
 					break
 				}
-				conn.lenDist.Reset(seed)
+				conn.LenDist.Reset(seed)
 			}
-		case packetTypeSignalStart:
+		case PacketTypeSignalStart:
 			// a signal from client to make server change to stateStart
-			if !conn.isServer {
+			if !conn.IsServer {
 				panic(fmt.Sprintf("Client receive SignalStart pkt from server? "))
 			}
-			log.Debugf("[State] %-12s->%-12s", stateMap[conn.state], stateMap[stateStart])
-			atomic.StoreUint32(&conn.state, stateStart)
-		case packetTypeSignalStop:
+			if conn.ConnState.LoadCurState() != StateStart {
+				log.Debugf("[State] Client signal: %s -> %s.", StateMap[conn.ConnState.LoadCurState()], StateMap[StateStart])
+				conn.ConnState.SetState(StateStart)
+			}
+		case PacketTypeSignalStop:
 			// a signal from client to make server change to stateStop
-			if !conn.isServer {
+			if !conn.IsServer {
 				panic(fmt.Sprintf("Client receive SignalStop pkt from server? "))
 			}
-			log.Debugf("[State] %-12s->%-12s", stateMap[conn.state], stateMap[stateStop])
-			atomic.StoreUint32(&conn.state, stateStop)
-		case packetTypeDummy:
+			if conn.ConnState.LoadCurState() != StateStop {
+				log.Debugf("[State] Client signal: %s -> %s.", StateMap[conn.ConnState.LoadCurState()], StateMap[StateStop])
+				conn.ConnState.SetState(StateStop)
+			}
+		case PacketTypeDummy:
 		default:
 			// Ignore unknown packet types.
 		}
