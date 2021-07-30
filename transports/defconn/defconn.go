@@ -71,9 +71,7 @@ const (
 	maxCloseDelay = 60
 	TWindow       = 4000 * time.Millisecond
 
-	gRPCAddr        = "localhost:10086"
-	traceLogEnabled = false
-	LogEnabled      = true
+	LogEnabled      = false
 )
 
 type DefConnClientArgs struct {
@@ -442,7 +440,7 @@ func (conn *DefConn) Read(b []byte) (n int, err error) {
 
 
 func (conn *DefConn) ReadFrom(r io.Reader) (written int64, err error) {
-	log.Infof("[State] Enter copyloop state: %v (%v is stateStart, %v is statStop)", conn.ConnState.LoadCurState(), StateStart, StateStop)
+	log.Infof("[State] Enter parent copyloop state: %v (%v is stateStart, %v is statStop)", conn.ConnState.LoadCurState(), StateStart, StateStop)
 	closeChan := make(chan int)
 	defer close(closeChan)
 
@@ -483,7 +481,7 @@ func (conn *DefConn) ReadFrom(r io.Reader) (written int64, err error) {
 				if !conn.IsServer && LogEnabled {
 					log.Infof("[TRACE_LOG] %d %d %d", time.Now().UnixNano(), int64(len(data)), int64(padLen))
 				}
-				log.Debugf("[Send] %-8s, %-3d+ %-3d bytes at %v", pktTypeMap[pktType], len(data), padLen, time.Now().Format("15:04:05.000"))
+				log.Debugf("[Send] %-8s, %-3d+ %-3d bytes at %v", PktTypeMap[pktType], len(data), padLen, time.Now().Format("15:04:05.000"))
 			}
 		}
 	}()

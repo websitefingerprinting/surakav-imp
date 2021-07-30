@@ -68,6 +68,13 @@ func (t *Transport) Name() string {
 	return transportName
 }
 
+// ClientFactory returns a new DefConnClientFactory instance.
+func (t *Transport) ClientFactory(stateDir string) (base.ClientFactory, error) {
+	log.Debugf("[Debug] Enter child client factory")
+	return t.Transport.ClientFactory(stateDir)
+}
+
+
 // ServerFactory returns a new ServerFactory instance.
 func (t *Transport) ServerFactory(stateDir string, args *pt.Args) (base.ServerFactory, error) {
 	sf, err := t.Transport.ServerFactory(stateDir, args)
@@ -86,16 +93,19 @@ func (t *Transport) ServerFactory(stateDir string, args *pt.Args) (base.ServerFa
 		st.rhoClient,
 		st.rhoServer,
 	}
-
 	return &tamarawSf, nil
 }
 
 type tamarawClientFactory struct {
-	defconn.DefConnClientFactory
+	transport defconn.DefConnClientFactory
+}
+
+func (cf *tamarawClientFactory) Transport() base.Transport {
+	return cf.transport.Transport()
 }
 
 func (cf *tamarawClientFactory) ParseArgs(args *pt.Args) (interface{}, error) {
-	arguments, err := cf.DefConnClientFactory.ParseArgs(args)
+	arguments, err := cf.transport.ParseArgs(args)
 
 	nSeg, err := utils.GetIntArgFromStr(nSegArg, args)
 	if err != nil {
@@ -119,18 +129,18 @@ func (cf *tamarawClientFactory) ParseArgs(args *pt.Args) (interface{}, error) {
 }
 
 func (cf *tamarawClientFactory) Dial(network, addr string, dialFn base.DialFunc, args interface{}) (net.Conn, error) {
-	defConn, err := cf.DefConnClientFactory.Dial(network, addr, dialFn, args)
+	defConn, err := cf.transport.Dial(network, addr, dialFn, args)
+	log.Debugf("[Client] parent dial returned")
 	if err != nil {
 		return nil, err
 	}
-	log.Debugf("[DEBUG] client con returned successfully")
 
 	argsT := args.(*tamarawClientArgs)
 	c := &tamarawConn{
 		defConn.(*defconn.DefConn),
 		argsT.nSeg, argsT.rhoClient, argsT.rhoServer,
 	}
-
+	log.Debugf("[DEBUG] params %v %v, %v, %T", c.nSeg, c.rhoClient, c.rhoServer, c)
 	return c, nil
 }
 
@@ -146,7 +156,6 @@ func (sf *tamarawServerFactory) WrapConn(conn net.Conn) (net.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	log.Debugf("[DEBUG] server con returned successfully")
 	c := &tamarawConn{
 		defConn.(*defconn.DefConn),
 		sf.nSeg, sf.rhoClient, sf.rhoServer,
@@ -164,8 +173,7 @@ type tamarawConn struct {
 
 
 func (conn *tamarawConn) ReadFrom(r io.Reader) (written int64, err error) {
-	log.Debugf("[State] Enter copyloop state: %v at %v", defconn.StateMap[conn.ConnState.LoadCurState()], time.Now().Format("15:04:05.000"))
-	log.Debugf("[DEBUG] decoder: %v", conn.Decoder)
+	log.Debugf("[State] Tamaraw Enter copyloop state: %v at %v", defconn.StateMap[conn.ConnState.LoadCurState()], time.Now().Format("15:04:05.000"))
 	closeChan := make(chan int)
 	defer close(closeChan)
 
@@ -231,7 +239,7 @@ func (conn *tamarawConn) ReadFrom(r io.Reader) (written int64, err error) {
 				if !conn.IsServer && defconn.LogEnabled{
 					log.Infof("[TRACE_LOG] %d %d %d", time.Now().UnixNano(), int64(len(data)), int64(padLen))
 				}
-				//log.Debugf("[Send] %-8s, %-3d+ %-3d bytes at %v", pktTypeMap[pktType], len(data), padLen, time.Now().Format("15:04:05.000"))
+				log.Debugf("[Send] %-8s, %-3d+ %-3d bytes at %v", defconn.PktTypeMap[pktType], len(data), padLen, time.Now().Format("15:04:05.000"))
 
 				// update state for client
 				// base.StateStop -(real pkt)-> base.StateReady
@@ -329,6 +337,9 @@ func (conn *tamarawConn) ReadFrom(r io.Reader) (written int64, err error) {
 	}
 }
 
+func (conn *tamarawConn) Read(b []byte) (n int, err error) {
+	return conn.DefConn.Read(b)
+}
 
 
 var _ base.ClientFactory = (*tamarawClientFactory)(nil)

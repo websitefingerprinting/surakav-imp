@@ -57,7 +57,7 @@ const (
 	PacketTypeSignalStop
 )
 
-var pktTypeMap = map[uint8]string {
+var PktTypeMap = map[uint8]string {
 	PacketTypePayload:     "Payload",
 	PacketTypeDummy:       "Dummy",
 	PacketTypePrngSeed:    "PrngSeed",
