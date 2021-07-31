@@ -74,10 +74,28 @@ const (
 	LogEnabled      = false
 )
 
+type ClientArgs interface {
+	GetNodeID() *ntor.NodeID
+	GetPublicKey() *ntor.PublicKey
+	GetSessionKey() *ntor.Keypair
+}
+
 type DefConnClientArgs struct {
 	nodeID     *ntor.NodeID
 	publicKey  *ntor.PublicKey
 	sessionKey *ntor.Keypair
+}
+
+func (d *DefConnClientArgs) GetNodeID() *ntor.NodeID {
+	return d.nodeID
+}
+
+func (d *DefConnClientArgs) GetPublicKey() *ntor.PublicKey {
+	return d.publicKey
+}
+
+func (d *DefConnClientArgs) GetSessionKey() *ntor.Keypair {
+	return d.sessionKey
 }
 
 // Transport is the defconn implementation of the base.DefTransport interface.
@@ -179,7 +197,7 @@ func (cf *DefConnClientFactory) ParseArgs(args *pt.Args) (interface{}, error) {
 
 func (cf *DefConnClientFactory) Dial(network, addr string, dialFn base.DialFunc, args interface{}) (net.Conn, error) {
 	// Validate args before bothering to open connection.
-	ca, ok := args.(*DefConnClientArgs)
+	ca, ok := args.(ClientArgs)
 	if !ok {
 		return nil, fmt.Errorf("invalid argument type for args")
 	}
@@ -263,7 +281,7 @@ type DefConn struct {
 }
 
 
-func newdefconnClientConn(conn net.Conn, args *DefConnClientArgs) (c *DefConn, err error) {
+func newdefconnClientConn(conn net.Conn, args ClientArgs) (c *DefConn, err error) {
 	// Generate the initial protocol polymorphism distribution(s).
 	var seed *drbg.Seed
 	if seed, err = drbg.NewSeed(); err != nil {
@@ -280,7 +298,7 @@ func newdefconnClientConn(conn net.Conn, args *DefConnClientArgs) (c *DefConn, e
 		return nil, err
 	}
 
-	if err = c.clientHandshake(args.nodeID, args.publicKey, args.sessionKey); err != nil {
+	if err = c.clientHandshake(args.GetNodeID(), args.GetPublicKey(), args.GetSessionKey()); err != nil {
 		return nil, err
 	}
 

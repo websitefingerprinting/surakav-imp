@@ -71,7 +71,10 @@ func (t *Transport) Name() string {
 // ClientFactory returns a new DefConnClientFactory instance.
 func (t *Transport) ClientFactory(stateDir string) (base.ClientFactory, error) {
 	log.Debugf("[Debug] Enter child client factory")
-	return t.Transport.ClientFactory(stateDir)
+	parent, err := t.Transport.ClientFactory(stateDir)
+	return &tamarawClientFactory{
+		 parent.(*defconn.DefConnClientFactory),
+	}, err
 }
 
 
@@ -97,15 +100,15 @@ func (t *Transport) ServerFactory(stateDir string, args *pt.Args) (base.ServerFa
 }
 
 type tamarawClientFactory struct {
-	transport defconn.DefConnClientFactory
+	*defconn.DefConnClientFactory
 }
 
 func (cf *tamarawClientFactory) Transport() base.Transport {
-	return cf.transport.Transport()
+	return cf.DefConnClientFactory.Transport()
 }
 
 func (cf *tamarawClientFactory) ParseArgs(args *pt.Args) (interface{}, error) {
-	arguments, err := cf.transport.ParseArgs(args)
+	arguments, err := cf.DefConnClientFactory.ParseArgs(args)
 
 	nSeg, err := utils.GetIntArgFromStr(nSegArg, args)
 	if err != nil {
@@ -129,7 +132,7 @@ func (cf *tamarawClientFactory) ParseArgs(args *pt.Args) (interface{}, error) {
 }
 
 func (cf *tamarawClientFactory) Dial(network, addr string, dialFn base.DialFunc, args interface{}) (net.Conn, error) {
-	defConn, err := cf.transport.Dial(network, addr, dialFn, args)
+	defConn, err := cf.DefConnClientFactory.Dial(network, addr, dialFn, args)
 	log.Debugf("[Client] parent dial returned")
 	if err != nil {
 		return nil, err
@@ -147,8 +150,8 @@ func (cf *tamarawClientFactory) Dial(network, addr string, dialFn base.DialFunc,
 type tamarawServerFactory struct {
 	*defconn.DefConnServerFactory
 	nSeg        int
-	rhoServer    int
 	rhoClient    int
+	rhoServer    int
 }
 
 func (sf *tamarawServerFactory) WrapConn(conn net.Conn) (net.Conn, error) {
@@ -184,6 +187,7 @@ func (conn *tamarawConn) ReadFrom(r io.Reader) (written int64, err error) {
 	} else {
 		rho = time.Duration(conn.rhoClient * 1e6)
 	}
+	log.Debugf("[DEBUG] [ReadFrom] %v %v %v", conn.rhoClient, conn.rhoServer, rho)
 
 	var curNSeg uint32 = 0
 	sendChan := make(chan defconn.PacketInfo, 65535) // all packed packets are sent through this channel
