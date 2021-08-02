@@ -235,6 +235,7 @@ func (conn *tamarawConn) ReadFrom(r io.Reader) (written int64, err error) {
 				// base.StateStop -(real pkt)-> base.StateReady
 				// base.StateReady -(real pkt)-> base.StateStart and send a StartSignal to server
 				// base.StatePadding -(curNSeg % NSeg == 0)-> base.StateStop and send a StopSignal to server
+				atomic.AddUint32(&curNSeg, 1)
 				if !conn.IsServer {
 					curState = conn.ConnState.LoadCurState()
 					if curState == defconn.StateStop && pktType == defconn.PacketTypePayload {
@@ -255,7 +256,6 @@ func (conn *tamarawConn) ReadFrom(r io.Reader) (written int64, err error) {
 					}
 				}
 				conn.SendChan <- defconn.PacketInfo{PktType: pktType, Data: data, PadLen: padLen}
-				atomic.AddUint32(&curNSeg, 1)
 			}
 		}
 	}()
