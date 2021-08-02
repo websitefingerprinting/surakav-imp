@@ -1,6 +1,9 @@
 package defconn
 
-import "sync"
+import (
+	"sync"
+	"sync/atomic"
+)
 
 const (
 	StateStart = iota
@@ -55,4 +58,25 @@ func NewState() (s *State) {
 		curState: StateStop,
 		lastState: StateStop,
 	}
+}
+
+func (conn *DefConn) NRealSegSentLoad() uint32 {
+	return atomic.LoadUint32(&conn.nRealSegSent)
+}
+
+func (conn *DefConn) NRealSegRcvLoad() uint32 {
+	return atomic.LoadUint32(&conn.nRealSegRcv)
+}
+
+func (conn *DefConn) NRealSegSentIncrement() {
+	atomic.AddUint32(&conn.nRealSegSent, 1)
+}
+
+func (conn *DefConn) NRealSegRcvIncrement() {
+	atomic.AddUint32(&conn.nRealSegRcv, 1)
+}
+
+func (conn *DefConn) NRealSegReset() {
+	atomic.StoreUint32(&conn.nRealSegSent, 0)
+	atomic.StoreUint32(&conn.nRealSegRcv, 0)
 }

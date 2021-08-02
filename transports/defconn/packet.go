@@ -32,7 +32,6 @@ import (
 	"fmt"
 	"github.com/websitefingerprinting/wfdef.git/common/log"
 	"io"
-	"sync/atomic"
 	"time"
 
 	"github.com/websitefingerprinting/wfdef.git/common/drbg"
@@ -166,9 +165,7 @@ func (conn *DefConn) ReadPackets() (err error) {
 		case PacketTypePayload:
 			if payloadLen > 0 {
 				conn.ReceiveDecodedBuffer.Write(payload)
-				if !conn.IsServer {
-					atomic.AddUint32(&conn.NRealSegRcv, 1)
-				}
+				conn.NRealSegRcvIncrement()
 			}
 		case PacketTypePrngSeed:
 			// Only regenerate the distribution if we are the client.

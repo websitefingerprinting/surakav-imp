@@ -30,7 +30,6 @@
 package tamaraw // import "github.com/websitefingerprinting/wfdef.git/transports/tamaraw"
 
 import (
-	"bytes"
 	"github.com/websitefingerprinting/wfdef.git/common/log"
 	"github.com/websitefingerprinting/wfdef.git/common/utils"
 	"github.com/websitefingerprinting/wfdef.git/transports/defconn"
@@ -70,7 +69,6 @@ func (t *Transport) Name() string {
 
 // ClientFactory returns a new DefConnClientFactory instance.
 func (t *Transport) ClientFactory(stateDir string) (base.ClientFactory, error) {
-	log.Debugf("[Debug] Enter child client factory")
 	parent, err := t.Transport.ClientFactory(stateDir)
 	return &tamarawClientFactory{
 		 parent.(*defconn.DefConnClientFactory),
@@ -133,7 +131,6 @@ func (cf *tamarawClientFactory) ParseArgs(args *pt.Args) (interface{}, error) {
 
 func (cf *tamarawClientFactory) Dial(network, addr string, dialFn base.DialFunc, args interface{}) (net.Conn, error) {
 	defConn, err := cf.DefConnClientFactory.Dial(network, addr, dialFn, args)
-	log.Debugf("[Client] parent dial returned")
 	if err != nil {
 		return nil, err
 	}
@@ -143,7 +140,6 @@ func (cf *tamarawClientFactory) Dial(network, addr string, dialFn base.DialFunc,
 		defConn.(*defconn.DefConn),
 		argsT.nSeg, argsT.rhoClient, argsT.rhoServer,
 	}
-	log.Debugf("[DEBUG] params %v %v, %v, %T", c.nSeg, c.rhoClient, c.rhoServer, c)
 	return c, nil
 }
 
@@ -177,48 +173,54 @@ type tamarawConn struct {
 
 func (conn *tamarawConn) ReadFrom(r io.Reader) (written int64, err error) {
 	log.Debugf("[State] Tamaraw Enter copyloop state: %v at %v", defconn.StateMap[conn.ConnState.LoadCurState()], time.Now().Format("15:04:05.000"))
-	closeChan := make(chan int)
-	defer close(closeChan)
-
-	errChan := make(chan error, 5)
+	defer close(conn.CloseChan)
 	var rho time.Duration
 	if conn.IsServer {
 		rho = time.Duration(conn.rhoServer * 1e6)
 	} else {
 		rho = time.Duration(conn.rhoClient * 1e6)
 	}
-	log.Debugf("[DEBUG] [ReadFrom] %v %v %v", conn.rhoClient, conn.rhoServer, rho)
 
 	var curNSeg uint32 = 0
-	sendChan := make(chan defconn.PacketInfo, 65535) // all packed packets are sent through this channel
-	var receiveBuf bytes.Buffer
+	var receiveBuf utils.SafeBuffer
 
 	//create a go routine to send out packets to the wire
+	go conn.Send()
+
+	//create a go routine to schedue the packets
+	// if no packet at the time, schedule a dummy one
 	go func() {
 		ticker := time.NewTicker(rho)
 		defer ticker.Stop()
+
 		var pktType uint8
+		var curState uint32
 		var data []byte
 		var padLen uint16
+
 		for {
-			select{
-			case _, ok := <- closeChan:
+			select {
+			case _, ok := <- conn.CloseChan:
 				if !ok{
-					log.Infof("[Routine] Send routine exits by closedChan.")
+					log.Infof("[Routine] Schedule routine exits by closedChan.")
 					return
 				}
 			case <- ticker.C:
-				atomic.AddUint32(&curNSeg, 1)
-				var frameBuf bytes.Buffer
-				var curState uint32
-				if len(sendChan) > 0 {
-					// pkts in the queue: possibly signal ones or real ones
-					packetInfo := <- sendChan
-					pktType = packetInfo.PktType
-					data    = packetInfo.Data
-					padLen  = packetInfo.PadLen
+				//ready to send out a packet
+				if receiveBuf.GetLen() > 0 {
+					pktType = defconn.PacketTypePayload
+					var payload [defconn.MaxPacketPayloadLength]byte
+					rdLen, rdErr := receiveBuf.Read(payload[:])
+					written += int64(rdLen)
+					if rdErr != nil {
+						log.Infof("[Routine] Schedule routine exits by err:%v", rdErr)
+						conn.ErrChan <- rdErr
+					}
+					data = payload[:rdLen]
+					padLen = uint16(defconn.MaxPacketPaddingLength-rdLen)
+					conn.NRealSegSentIncrement()
 				} else {
-					pktType = defconn.PacketTypeDummy
+					pktType = defconn.PacketTypePayload
 					data = []byte{}
 					padLen = defconn.MaxPacketPaddingLength
 				}
@@ -228,22 +230,6 @@ func (conn *tamarawConn) ReadFrom(r io.Reader) (written int64, err error) {
 					// stop state should not send dummy packets
 					continue
 				}
-
-				err = conn.MakePacket(&frameBuf, pktType, data, padLen)
-				if err != nil {
-					errChan <- err
-					return
-				}
-				_, wtErr := conn.Conn.Write(frameBuf.Bytes())
-				if wtErr != nil {
-					errChan <- wtErr
-					log.Infof("[Routine] Send routine exits by write err.")
-					return
-				}
-				if !conn.IsServer && defconn.LogEnabled{
-					log.Infof("[TRACE_LOG] %d %d %d", time.Now().UnixNano(), int64(len(data)), int64(padLen))
-				}
-				log.Debugf("[Send] %-8s, %-3d+ %-3d bytes at %v", defconn.PktTypeMap[pktType], len(data), padLen, time.Now().Format("15:04:05.000"))
 
 				// update state for client
 				// base.StateStop -(real pkt)-> base.StateReady
@@ -257,17 +243,19 @@ func (conn *tamarawConn) ReadFrom(r io.Reader) (written int64, err error) {
 					} else if curState == defconn.StateReady && pktType == defconn.PacketTypePayload {
 						conn.ConnState.SetState(defconn.StateStart)
 						log.Debugf("[State] %-12s->%-12s", defconn.StateMap[atomic.LoadUint32(&curState)], defconn.StateMap[defconn.StateStart])
-						sendChan <- defconn.PacketInfo{PktType: defconn.PacketTypeSignalStart, Data: []byte{}, PadLen: defconn.MaxPacketPaddingLength}
+						conn.SendChan <- defconn.PacketInfo{PktType: defconn.PacketTypeSignalStart, Data: []byte{}, PadLen: defconn.MaxPacketPaddingLength}
 					} else  if curState == defconn.StatePadding {
 						if int(curNSeg) % conn.nSeg == 0 {
 							log.Debugf("[Event] current nseg is %v", curNSeg)
 							conn.ConnState.SetState(defconn.StateStop)
 							log.Debugf("[State] %-12s->%-12s", defconn.StateMap[atomic.LoadUint32(&curState)], defconn.StateMap[defconn.StateStop])
-							sendChan <- defconn.PacketInfo{PktType: defconn.PacketTypeSignalStop, Data: []byte{}, PadLen: defconn.MaxPacketPaddingLength}
+							conn.SendChan <- defconn.PacketInfo{PktType: defconn.PacketTypeSignalStop, Data: []byte{}, PadLen: defconn.MaxPacketPaddingLength}
 							atomic.StoreUint32(&curNSeg, 0)
 						}
 					}
 				}
+				conn.SendChan <- defconn.PacketInfo{PktType: pktType, Data: data, PadLen: padLen}
+				atomic.AddUint32(&curNSeg, 1)
 			}
 		}
 	}()
@@ -280,15 +268,15 @@ func (conn *tamarawConn) ReadFrom(r io.Reader) (written int64, err error) {
 		defer ticker.Stop()
 		for{
 			select{
-			case _, ok := <- closeChan:
+			case _, ok := <- conn.CloseChan:
 				if !ok {
 					log.Infof("[Routine] Ticker routine exits by closeChan.")
 					return
 				}
 			case <- ticker.C:
 				curState := conn.ConnState.LoadCurState()
-				log.Debugf("[State] Real Sent: %v, Real Receive: %v, curState: %s at %v.", conn.NRealSegSent, conn.NRealSegRcv, defconn.StateMap[conn.ConnState.LoadCurState()], time.Now().Format("15:04:05.000000"))
-				if !conn.IsServer && curState != defconn.StateStop && (atomic.LoadUint32(&conn.NRealSegSent) < 2 || atomic.LoadUint32(&conn.NRealSegRcv) < 2){
+				log.Debugf("[State] Real Sent: %v, Real Receive: %v, curState: %s at %v.", conn.NRealSegSentLoad(), conn.NRealSegRcvLoad(), defconn.StateMap[conn.ConnState.LoadCurState()], time.Now().Format("15:04:05.000000"))
+				if !conn.IsServer && curState != defconn.StateStop && (conn.NRealSegSentLoad() < 2 || conn.NRealSegRcvLoad() < 2){
 					// if throughput is small, change client's state:
 					// StateReady -> StateStop
 					// StateStart -> StatePadding
@@ -300,16 +288,14 @@ func (conn *tamarawConn) ReadFrom(r io.Reader) (written int64, err error) {
 						log.Debugf("[State] %-12s->%-12s", defconn.StateMap[curState], defconn.StateMap[defconn.StatePadding])
 					}
 				}
-
-				atomic.StoreUint32(&conn.NRealSegSent, 0) //reset counter
-				atomic.StoreUint32(&conn.NRealSegRcv, 0) //reset counter
+				conn.NRealSegReset()
 			}
 		}
 	}()
 
 	for {
 		select {
-		case conErr := <- errChan:
+		case conErr := <- conn.ErrChan:
 			log.Infof("downstream copy loop terminated at %v. Reason: %v", time.Now().Format("15:04:05.000000"), conErr)
 			return written, conErr
 		default:
@@ -320,29 +306,17 @@ func (conn *tamarawConn) ReadFrom(r io.Reader) (written int64, err error) {
 				return written, err
 			}
 			if rdLen > 0 {
-				receiveBuf.Write(buf[: rdLen])
+				wlen, werr := receiveBuf.Write(buf[: rdLen])
+				written += int64(wlen)
+				if werr != nil {
+					return written, werr
+				}
 			} else {
 				log.Errorf("BUG? read 0 bytes, err: %v", err)
 				return written, io.EOF
 			}
-
-			for receiveBuf.Len() > 0 {
-				var payload [defconn.MaxPacketPayloadLength]byte
-				rdLen, rdErr := receiveBuf.Read(payload[:])
-				written += int64(rdLen)
-				if rdErr != nil {
-					log.Infof("Exit by read buffer err:%v", rdErr)
-					return written, rdErr
-				}
-				sendChan <- defconn.PacketInfo{PktType: defconn.PacketTypePayload, Data: payload[:rdLen], PadLen: uint16(defconn.MaxPacketPaddingLength-rdLen)}
-				atomic.AddUint32(&conn.NRealSegSent, 1)
-			}
 		}
 	}
-}
-
-func (conn *tamarawConn) Read(b []byte) (n int, err error) {
-	return conn.DefConn.Read(b)
 }
 
 

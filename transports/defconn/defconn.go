@@ -38,7 +38,6 @@ import (
 	"io/ioutil"
 	"math/rand"
 	"net"
-	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -249,8 +248,13 @@ func (sf *DefConnServerFactory) WrapConn(conn net.Conn) (net.Conn, error) {
 
 
 	lenDist := probdist.New(sf.lenSeed, 0, framing.MaximumSegmentLength, false)
+
+	closeChan := make(chan int)
+	errChan := make(chan error, 10)
+	sendChan := make(chan PacketInfo, 10000)
+
 	// The server's initial state is intentionally set to stateStart at the very beginning to obfuscate the RTT between client and server
-	c := &DefConn{conn, true, lenDist, 0, 0, NewState(), bytes.NewBuffer(nil), bytes.NewBuffer(nil), make([]byte, ConsumeReadSize), nil, nil}
+	c := &DefConn{conn, true, lenDist, 0, 0, NewState(), closeChan, errChan, sendChan, bytes.NewBuffer(nil), bytes.NewBuffer(nil), make([]byte, ConsumeReadSize), nil, nil}
 	startTime := time.Now()
 
 	if err = c.serverHandshake(sf, sessionKey); err != nil {
@@ -268,9 +272,13 @@ type DefConn struct {
 	IsServer bool
 	LenDist  *probdist.WeightedDist
 
-	NRealSegSent uint32 // real packet counter over TWindow second
-	NRealSegRcv  uint32
+	nRealSegSent uint32 // real packet counter over TWindow second
+	nRealSegRcv  uint32
 	ConnState    *State
+
+	CloseChan   chan int   //used to signal go routines for stop
+	ErrChan     chan error //used to send err between go routines
+	SendChan    chan PacketInfo //used to send packets to the send routine
 
 	ReceiveBuffer        *bytes.Buffer
 	ReceiveDecodedBuffer *bytes.Buffer
@@ -289,8 +297,13 @@ func newdefconnClientConn(conn net.Conn, args ClientArgs) (c *DefConn, err error
 	}
 	lenDist := probdist.New(seed, 0, framing.MaximumSegmentLength, false)
 
+	closeChan := make(chan int)
+	errChan := make(chan error, 10)
+	sendChan := make(chan PacketInfo, 10000)
+
+
 	// Allocate the client structure.
-	c = &DefConn{conn, false, lenDist, 0, 0, NewState(), bytes.NewBuffer(nil), bytes.NewBuffer(nil), make([]byte, ConsumeReadSize), nil, nil}
+	c = &DefConn{conn, false, lenDist, 0, 0, NewState(), closeChan, errChan, sendChan, bytes.NewBuffer(nil), bytes.NewBuffer(nil), make([]byte, ConsumeReadSize), nil, nil}
 
 	// Start the handshake timeout.
 	deadline := time.Now().Add(clientHandshakeTimeout)
@@ -456,55 +469,51 @@ func (conn *DefConn) Read(b []byte) (n int, err error) {
 }
 
 
+func(conn *DefConn) Send() {
+	//A dedicated function responsible for sending out packets coming from conn.SendChan
+	//Err is propagated via conn.ErrChan
+	for {
+		select{
+		case _, ok := <- conn.CloseChan:
+			if !ok{
+				log.Infof("[Routine] Send routine exits by closedChan.")
+				return
+			}
+		case packetInfo := <- conn.SendChan:
+			pktType := packetInfo.PktType
+			data    := packetInfo.Data
+			padLen  := packetInfo.PadLen
+			var frameBuf bytes.Buffer
+			err := conn.MakePacket(&frameBuf, pktType, data, padLen)
+			if err != nil {
+				conn.ErrChan <- err
+				log.Infof("[Routine] Send routine exits by make pkt err.")
+				return
+			}
+			_, wtErr := conn.Conn.Write(frameBuf.Bytes())
+			if wtErr != nil {
+				conn.ErrChan <- wtErr
+				log.Infof("[Routine] Send routine exits by write err.")
+				return
+			}
+
+			if !conn.IsServer && LogEnabled {
+				log.Infof("[TRACE_LOG] %d %d %d", time.Now().UnixNano(), int64(len(data)), int64(padLen))
+			}
+			log.Debugf("[Send] %-8s, %-3d+ %-3d bytes at %v", PktTypeMap[pktType], len(data), padLen, time.Now().Format("15:04:05.000"))
+		}
+	}
+}
+
 
 func (conn *DefConn) ReadFrom(r io.Reader) (written int64, err error) {
 	log.Infof("[State] Enter parent copyloop state: %v (%v is stateStart, %v is statStop)", conn.ConnState.LoadCurState(), StateStart, StateStop)
-	closeChan := make(chan int)
-	defer close(closeChan)
-
-	errChan := make(chan error, 5)           // errors from all the go routines will be sent to this channel
-	sendChan := make(chan PacketInfo, 65535) // all packed packets are sent through this channel
+	defer close(conn.CloseChan)
 
 	var receiveBuf utils.SafeBuffer //read payload from upstream and buffer here
 
-	//client side launch trace logger routine
-
 	//create a go routine to send out packets to the wire
-	go func() {
-		for {
-			select{
-			case _, ok := <- closeChan:
-				if !ok{
-					log.Infof("[Routine] Send routine exits by closedChan.")
-					return
-				}
-			case packetInfo := <- sendChan:
-				pktType := packetInfo.PktType
-				data    := packetInfo.Data
-				padLen  := packetInfo.PadLen
-				var frameBuf bytes.Buffer
-				err = conn.MakePacket(&frameBuf, pktType, data, padLen)
-				if err != nil {
-					errChan <- err
-					log.Infof("[Routine] Send routine exits by make pkt err.")
-					return
-				}
-				_, wtErr := conn.Conn.Write(frameBuf.Bytes())
-				if wtErr != nil {
-					errChan <- wtErr
-					log.Infof("[Routine] Send routine exits by write err.")
-					return
-				}
-
-				if !conn.IsServer && LogEnabled {
-					log.Infof("[TRACE_LOG] %d %d %d", time.Now().UnixNano(), int64(len(data)), int64(padLen))
-				}
-				log.Debugf("[Send] %-8s, %-3d+ %-3d bytes at %v", PktTypeMap[pktType], len(data), padLen, time.Now().Format("15:04:05.000"))
-			}
-		}
-	}()
-
-
+	go conn.Send()
 
 
 	// this go routine regularly check the real throughput
@@ -514,27 +523,26 @@ func (conn *DefConn) ReadFrom(r io.Reader) (written int64, err error) {
 		defer ticker.Stop()
 		for{
 			select{
-			case _, ok := <- closeChan:
+			case _, ok := <- conn.CloseChan:
 				if !ok {
 					log.Infof("[Routine] Ticker routine exits by closeChan.")
 					return
 				}
 			case <- ticker.C:
-				log.Debugf("[State] Real Sent: %v, Real Receive: %v, curState: %s at %v.", conn.NRealSegSent, conn.NRealSegRcv, StateMap[conn.ConnState.LoadCurState()], time.Now().Format("15:04:05.000000"))
-				if !conn.IsServer && conn.ConnState.LoadCurState() != StateStop && (atomic.LoadUint32(&conn.NRealSegSent) < 2 || atomic.LoadUint32(&conn.NRealSegRcv) < 2) {
+				log.Debugf("[State] Real Sent: %v, Real Receive: %v, curState: %s at %v.", conn.NRealSegSentLoad(), conn.NRealSegRcvLoad(), StateMap[conn.ConnState.LoadCurState()], time.Now().Format("15:04:05.000000"))
+				if !conn.IsServer && conn.ConnState.LoadCurState() != StateStop && (conn.NRealSegSentLoad() < 2 || conn.NRealSegRcvLoad() < 2) {
 					log.Infof("[State] %s -> %s.", StateMap[conn.ConnState.LoadCurState()], StateMap[StateStop])
 					conn.ConnState.SetState(StateStop)
-					sendChan <- PacketInfo{PktType: PacketTypeSignalStop, Data: []byte{}, PadLen: MaxPacketPaddingLength}
+					conn.SendChan <- PacketInfo{PktType: PacketTypeSignalStop, Data: []byte{}, PadLen: MaxPacketPaddingLength}
 				}
-				atomic.StoreUint32(&conn.NRealSegSent, 0) //reset counter
-				atomic.StoreUint32(&conn.NRealSegRcv, 0)  //reset counter
+				conn.NRealSegReset() //reset counter
 			}
 		}
 	}()
 
 	for {
 		select {
-		case conErr := <- errChan:
+		case conErr := <- conn.ErrChan:
 			log.Infof("downstream copy loop terminated at %v. Reason: %v", time.Now().Format("15:04:05.000000"), conErr)
 			return written, conErr
 		default:
@@ -558,7 +566,7 @@ func (conn *DefConn) ReadFrom(r io.Reader) (written int64, err error) {
 					(conn.ConnState.LoadCurState() == StateReady) {
 					log.Infof("[State] %s -> %s.", StateMap[conn.ConnState.LoadCurState()], StateMap[StateStart])
 					conn.ConnState.SetState(StateStart)
-					sendChan <- PacketInfo{PktType: PacketTypeSignalStart, Data: []byte{}, PadLen: MaxPacketPaddingLength}
+					conn.SendChan <- PacketInfo{PktType: PacketTypeSignalStart, Data: []byte{}, PadLen: MaxPacketPaddingLength}
 				} else if conn.ConnState.LoadCurState() == StateStop {
 					log.Infof("[State] %s -> %s.", StateMap[StateStop], StateMap[StateReady])
 					conn.ConnState.SetState(StateReady)
@@ -572,8 +580,8 @@ func (conn *DefConn) ReadFrom(r io.Reader) (written int64, err error) {
 					log.Infof("Exit by read buffer err:%v", rdErr)
 					return written, rdErr
 				}
-				sendChan <- PacketInfo{PktType: PacketTypePayload, Data: payload[:rdLen], PadLen: uint16(MaxPacketPaddingLength -rdLen)}
-				atomic.AddUint32(&conn.NRealSegSent, 1)
+				conn.SendChan <- PacketInfo{PktType: PacketTypePayload, Data: payload[:rdLen], PadLen: uint16(MaxPacketPaddingLength -rdLen)}
+				conn.NRealSegSentIncrement()
 			}
 		}
 	}
