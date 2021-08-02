@@ -499,8 +499,9 @@ func(conn *DefConn) Send() {
 
 			if !conn.IsServer && LogEnabled {
 				log.Infof("[TRACE_LOG] %d %d %d", time.Now().UnixNano(), int64(len(data)), int64(padLen))
+			} else {
+				log.Debugf("[Send] %-8s, %-3d+ %-3d bytes at %v", PktTypeMap[pktType], len(data), padLen, time.Now().Format("15:04:05.000"))
 			}
-			log.Debugf("[Send] %-8s, %-3d+ %-3d bytes at %v", PktTypeMap[pktType], len(data), padLen, time.Now().Format("15:04:05.000"))
 		}
 	}
 }
