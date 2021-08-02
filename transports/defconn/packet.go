@@ -160,7 +160,7 @@ func (conn *DefConn) ReadPackets() (err error) {
 		if !conn.IsServer && pktType != PacketTypePrngSeed && LogEnabled {
 			log.Infof("[TRACE_LOG] %d %d %d", time.Now().UnixNano(), -int64(payloadLen), -(int64(decLen -PacketOverhead) - int64(payloadLen)))
 		}
-		log.Debugf("[Rcv] %-8s, %-3d+ %-3d bytes at %v", PktTypeMap[pktType], -int64(payloadLen), -(int64(decLen -PacketOverhead) - int64(payloadLen)), time.Now().Format("15:04:05.000"))
+		log.Debugf("[Rcv]  %-8s, %-3d+ %-3d bytes at %v", PktTypeMap[pktType], -int64(payloadLen), -(int64(decLen -PacketOverhead) - int64(payloadLen)), time.Now().Format("15:04:05.000"))
 
 
 		switch pktType {
