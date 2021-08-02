@@ -220,7 +220,7 @@ func (conn *tamarawConn) ReadFrom(r io.Reader) (written int64, err error) {
 					padLen = uint16(defconn.MaxPacketPaddingLength-rdLen)
 					conn.NRealSegSentIncrement()
 				} else {
-					pktType = defconn.PacketTypePayload
+					pktType = defconn.PacketTypeDummy
 					data = []byte{}
 					padLen = defconn.MaxPacketPaddingLength
 				}
