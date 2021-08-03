@@ -54,6 +54,7 @@ const (
 	PacketTypePrngSeed
 	PacketTypeSignalStart
 	PacketTypeSignalStop
+	PacketTypeFinish
 )
 
 var PktTypeMap = map[uint8]string {
@@ -62,6 +63,7 @@ var PktTypeMap = map[uint8]string {
 	PacketTypePrngSeed:    "PrngSeed",
 	PacketTypeSignalStart: "SigStart",
 	PacketTypeSignalStop:  "SigStop",
+	PacketTypeFinish:      "SigFinish",
 }
 
 // InvalidPacketLengthError is the error returned when decodePacket detects a
@@ -198,6 +200,7 @@ func (conn *DefConn) ReadPackets() (err error) {
 				log.Debugf("[State] Client signal: %s -> %s.", StateMap[conn.ConnState.LoadCurState()], StateMap[StateStop])
 				conn.ConnState.SetState(StateStop)
 			}
+		case PacketTypeFinish:
 		case PacketTypeDummy:
 		default:
 			// Ignore unknown packet types.

@@ -440,6 +440,7 @@ func (conn *DefConn) serverHandshake(sf *DefConnServerFactory, sessionKey *ntor.
 
 type ReadPacketsFuncType func() error
 
+// utils
 // Read interface with customized readPackets function
 func (conn *DefConn) MyRead(b []byte, readPacketsFunc ReadPacketsFuncType)(n int, err error) {
 	// If there is no payload from the previous Read() calls, consume Data off
@@ -501,7 +502,7 @@ func (conn *DefConn) Read(b []byte) (n int, err error) {
 	return
 }
 
-
+// utils
 func(conn *DefConn) Send() {
 	//A dedicated function responsible for sending out packets coming from conn.SendChan
 	//Err is propagated via conn.ErrChan

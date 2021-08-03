@@ -32,121 +32,30 @@ import (
 	"fmt"
 	"github.com/websitefingerprinting/wfdef.git/common/log"
 	"github.com/websitefingerprinting/wfdef.git/common/utils"
-	"io"
-	"sync/atomic"
+	"github.com/websitefingerprinting/wfdef.git/transports/defconn"
 	"time"
 
 	"github.com/websitefingerprinting/wfdef.git/common/drbg"
-	"github.com/websitefingerprinting/wfdef.git/transports/wfgan/framing"
+	"github.com/websitefingerprinting/wfdef.git/transports/defconn/framing"
 )
 
-const (
-	packetOverhead          = 2 + 1
-	//maxPacketPayloadLength  = framing.MaximumFramePayloadLength - packetOverhead
-	maxPacketPayloadLength  = 536 //size of a Tor cell wrapped by TLS
-	maxPacketPaddingLength  = maxPacketPayloadLength
-	seedPacketPayloadLength = seedLength
-
-	consumeReadSize = framing.MaximumSegmentLength * 16
-)
-
-const (
-	packetTypePayload = iota
-	packetTypeDummy
-	packetTypePrngSeed
-	packetTypeSignalStart
-	packetTypeSignalStop
-	packetTypeFinish
-)
-
-var pktTypeMap = map[uint8]string {
-	packetTypePayload:      "Payload",
-	packetTypeDummy:        "Dummy",
-	packetTypePrngSeed:     "PrngSeed",
-	packetTypeSignalStart:  "SigStart",
-	packetTypeSignalStop:   "SigStop",
-	packetTypeFinish:       "SigFinish",
-}
-
-// InvalidPacketLengthError is the error returned when decodePacket detects a
-// invalid packet length/
-type InvalidPacketLengthError int
-
-func (e InvalidPacketLengthError) Error() string {
-	return fmt.Sprintf("packet: Invalid packet length: %d", int(e))
-}
-
-// InvalidPayloadLengthError is the error returned when decodePacket rejects the
-// payload length.
-type InvalidPayloadLengthError int
-
-type PacketInfo struct {
-	pktType  uint8
-	data     []byte
-	padLen   uint16
-}
-
-func (e InvalidPayloadLengthError) Error() string {
-	return fmt.Sprintf("packet: Invalid payload length: %d", int(e))
-}
-
-var zeroPadBytes [maxPacketPaddingLength]byte
-
-func (conn *wfganConn) makePacket(w io.Writer, pktType uint8, data []byte, padLen uint16) error {
-	var pkt [framing.MaximumFramePayloadLength]byte
-
-	if len(data)+int(padLen) > maxPacketPayloadLength {
-		panic(fmt.Sprintf("BUG: makePacket() len(data) + padLen > maxPacketPayloadLength: %d + %d > %d",
-			len(data), padLen, maxPacketPayloadLength))
-	}
-
-	// Packets are:
-	//   uint8_t type      packetTypePayload (0x00)
-	//   uint16_t length   Length of the payload (Big Endian).
-	//   uint8_t[] payload Data payload.
-	//   uint8_t[] padding Padding.
-	pkt[0] = pktType
-	binary.BigEndian.PutUint16(pkt[1:], uint16(len(data)))
-	if len(data) > 0 {
-		copy(pkt[3:], data[:])
-	}
-	copy(pkt[3+len(data):], zeroPadBytes[:padLen])
-
-	pktLen := packetOverhead + len(data) + int(padLen)
-
-	// Encode the packet in an AEAD frame.
-	var frame [framing.MaximumSegmentLength]byte
-	frameLen, err := conn.encoder.Encode(frame[:], pkt[:pktLen])
-	if err != nil {
-		// All encoder errors are fatal.
-		return err
-	}
-	wrLen, err := w.Write(frame[:frameLen])
-	if err != nil {
-		return err
-	} else if wrLen < frameLen {
-		return io.ErrShortWrite
-	}
-
-	return nil
-}
 
 func (conn *wfganConn) readPackets() (err error) {
 	// Attempt to read off the network.
-	rdLen, rdErr := conn.Conn.Read(conn.readBuffer)
-	conn.receiveBuffer.Write(conn.readBuffer[:rdLen])
+	rdLen, rdErr := conn.Conn.Read(conn.ReadBuffer)
+	conn.ReceiveBuffer.Write(conn.ReadBuffer[:rdLen])
 
 	var decoded [framing.MaximumFramePayloadLength]byte
-	for conn.receiveBuffer.Len() > 0 {
+	for conn.ReceiveBuffer.Len() > 0 {
 		// Decrypt an AEAD frame.
 		decLen := 0
-		decLen, err = conn.decoder.Decode(decoded[:], conn.receiveBuffer)
+		decLen, err = conn.Decoder.Decode(decoded[:], conn.ReceiveBuffer)
 		if err == framing.ErrAgain {
 			break
 		} else if err != nil {
 			break
-		} else if decLen < packetOverhead {
-			err = InvalidPacketLengthError(decLen)
+		} else if decLen < defconn.PacketOverhead {
+			err = defconn.InvalidPacketLengthError(decLen)
 			break
 		}
 
@@ -154,60 +63,60 @@ func (conn *wfganConn) readPackets() (err error) {
 		pkt := decoded[0:decLen]
 		pktType := pkt[0]
 		payloadLen := binary.BigEndian.Uint16(pkt[1:])
-		if int(payloadLen) > len(pkt)-packetOverhead {
-			err = InvalidPayloadLengthError(int(payloadLen))
+		if int(payloadLen) > len(pkt)-defconn.PacketOverhead {
+			err = defconn.InvalidPayloadLengthError(int(payloadLen))
 			break
 		}
 		payload := pkt[3 : 3+payloadLen]
 
-		if !conn.isServer && pktType != packetTypePrngSeed && logEnabled{
-			log.Infof("[TRACE_LOG] %d %d %d", time.Now().UnixNano(), -int64(payloadLen), -(int64(decLen - packetOverhead) - int64(payloadLen)))
+		if !conn.IsServer && pktType != defconn.PacketTypePrngSeed && defconn.LogEnabled{
+			log.Infof("[TRACE_LOG] %d %d %d", time.Now().UnixNano(), -int64(payloadLen), -(int64(decLen - defconn.PacketOverhead) - int64(payloadLen)))
+		}else {
+			log.Debugf("[Rcv]  %-8s, %-3d+ %-3d bytes at %v", defconn.PktTypeMap[pktType], -int64(payloadLen), -(int64(decLen -defconn.PacketOverhead) - int64(payloadLen)), time.Now().Format("15:04:05.000"))
 		}
 
 		switch pktType {
-		case packetTypePayload:
+		case defconn.PacketTypePayload:
 			if payloadLen > 0 {
-				conn.receiveDecodedBuffer.Write(payload)
-				if !conn.isServer {
-					atomic.AddUint32(&conn.nRealSegRcv, 1)
-				}
+				conn.ReceiveDecodedBuffer.Write(payload)
+				conn.NRealSegRcvIncrement()
 			}
-		case packetTypePrngSeed:
+		case defconn.PacketTypePrngSeed:
 			// Only regenerate the distribution if we are the client.
-			if len(payload) == seedPacketPayloadLength && !conn.isServer {
+			if len(payload) == defconn.SeedPacketPayloadLength && !conn.IsServer {
 				var seed *drbg.Seed
 				seed, err = drbg.SeedFromBytes(payload)
 				if err != nil {
 					break
 				}
-				conn.lenDist.Reset(seed)
+				conn.LenDist.Reset(seed)
 			}
-		case packetTypeSignalStart:
+		case defconn.PacketTypeSignalStart:
 			// a signal from client to make server change to stateStart
-			if !conn.isServer {
+			if !conn.IsServer {
 				panic(fmt.Sprintf("Client receive SignalStart pkt from server? "))
 			}
-			if atomic.LoadUint32(&conn.state) != stateStart {
+			if conn.ConnState.LoadCurState() != defconn.StateStart {
 				conn.randomP = utils.Beta(float64(conn.p))
-				log.Debugf("[State] Client signal: %s -> %s.", stateMap[atomic.LoadUint32(&conn.state)], stateMap[stateStart])
-				atomic.StoreUint32(&conn.state, stateStart)
+				log.Debugf("[State] Client signal: %s -> %s.", defconn.StateMap[conn.ConnState.LoadCurState()], defconn.StateMap[defconn.StateStart])
+				conn.ConnState.SetState(defconn.StateStart)
 				log.Debugf("[State] Random P is %.2f", conn.randomP)
 			}
-		case packetTypeSignalStop:
+		case defconn.PacketTypeSignalStop:
 			// a signal from client to make server change to stateStop
-			if !conn.isServer {
+			if !conn.IsServer {
 				panic(fmt.Sprintf("Client receive SignalStop pkt from server? "))
 			}
-			if atomic.LoadUint32(&conn.state) != stateStop{
-				log.Debugf("[State] Client signal: %s -> %s.", stateMap[atomic.LoadUint32(&conn.state)], stateMap[stateStop])
-				atomic.StoreUint32(&conn.state, stateStop)
+			if conn.ConnState.LoadCurState() != defconn.StateStop{
+				log.Debugf("[State] Client signal: %s -> %s.", defconn.StateMap[conn.ConnState.LoadCurState()], defconn.StateMap[defconn.StateStop])
+				conn.ConnState.SetState(defconn.StateStop)
 			}
-		case packetTypeFinish:
-			if !conn.isServer {
+		case defconn.PacketTypeFinish:
+			if !conn.IsServer {
 				panic(fmt.Sprintf("Client receive SignalFinish pkt from server? "))
 			}
 			conn.canSendChan <- binary.BigEndian.Uint32(payload)
-		case packetTypeDummy:
+		case defconn.PacketTypeDummy:
 		default:
 			// Ignore unknown packet types.
 		}
