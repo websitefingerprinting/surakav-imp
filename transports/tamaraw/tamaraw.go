@@ -67,11 +67,11 @@ func (t *Transport) Name() string {
 	return transportName
 }
 
-// ClientFactory returns a new DefConnClientFactory instance.
+// ClientFactory returns a new ClientFactory instance.
 func (t *Transport) ClientFactory(stateDir string) (base.ClientFactory, error) {
-	parent, err := t.Transport.ClientFactory(stateDir)
+	parentFactory, err := t.Transport.ClientFactory(stateDir)
 	return &tamarawClientFactory{
-		 parent.(*defconn.DefConnClientFactory),
+		parentFactory.(*defconn.DefConnClientFactory),
 	}, err
 }
 

@@ -121,7 +121,22 @@ func GetIntArgFromStr(argName string, args *pt.Args) (interface {}, error) {
 	}
 	argValue, err := strconv.Atoi(argStr)
 	if err != nil {
-		return nil, fmt.Errorf("malformed nseg '%s'", argStr)
+		return nil, fmt.Errorf("malformed '%s' '%s'", argName, argStr)
 	}
 	return argValue, nil
 }
+
+func GetFloat32ArgFromStr(argName string, args *pt.Args) (interface {}, error) {
+	argStr, argOK := args.Get(argName)
+	if !argOK {
+		return nil, fmt.Errorf("missing argument '%s'", argName)
+	}
+	argValue, err := strconv.ParseFloat(argStr, 32)
+	if err != nil {
+		return nil, fmt.Errorf("malformed '%s' '%s'", argName, argStr)
+	}
+	return argValue, nil
+}
+
+
+

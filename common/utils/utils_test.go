@@ -1,7 +1,6 @@
 package utils
 
 import (
-	"fmt"
 	"math"
 	"testing"
 )
@@ -16,14 +15,4 @@ func TestReadFloatFromFile(t *testing.T) {
 	}
 }
 
-func TestRandomBernoulli(t *testing.T) {
-	p := 0.4
-	arr := [1000]int{}
-	sum := 0.0
-	for i:=0; i<len(arr); i++ {
-		arr[i] = RandomBernoulli(p)
-		sum += float64(arr[i]) / float64(len(arr))
-	}
-	fmt.Printf("%.2f\n", sum)
-}
 

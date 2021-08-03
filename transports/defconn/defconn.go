@@ -438,6 +438,39 @@ func (conn *DefConn) serverHandshake(sf *DefConnServerFactory, sessionKey *ntor.
 	return nil
 }
 
+type ReadPacketsFuncType func() error
+
+// Read interface with customized readPackets function
+func (conn *DefConn) MyRead(b []byte, readPacketsFunc ReadPacketsFuncType)(n int, err error) {
+	// If there is no payload from the previous Read() calls, consume Data off
+	// the network.  Not all Data received is guaranteed to be usable payload,
+	// so do this in a loop till Data is present or an error occurs.
+	for conn.ReceiveDecodedBuffer.Len() == 0 {
+		err = readPacketsFunc()
+		if err == framing.ErrAgain {
+			// Don't proagate this back up the call stack if we happen to break
+			// out of the loop.
+			err = nil
+			continue
+		} else if err != nil {
+			break
+		}
+	}
+
+	// Even if err is set, attempt to do the read anyway so that all decoded
+	// Data gets relayed before the connection is torn down.
+	if conn.ReceiveDecodedBuffer.Len() > 0 {
+		var berr error
+		n, berr = conn.ReceiveDecodedBuffer.Read(b)
+		if err == nil {
+			// Only propagate berr if there are not more important (fatal)
+			// errors from the network/crypto/packet processing.
+			err = berr
+		}
+	}
+	return
+}
+
 func (conn *DefConn) Read(b []byte) (n int, err error) {
 	// If there is no payload from the previous Read() calls, consume Data off
 	// the network.  Not all Data received is guaranteed to be usable payload,
