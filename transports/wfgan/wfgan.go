@@ -82,8 +82,8 @@ const (
 	maxQueueSize       = 1000 * 3
 
 	gRPCAddr           = "localhost:9999"
-	o2oRelPath         = "../transports/wfgan/grpc/time_feature_0-500x0-1000_o2o.ipt"  //relative to wfdef/obfs4proxy
-	o2iRelPath         = "../transports/wfgan/grpc/time_feature_0-500x0-1000_o2i.ipt"
+	o2oRelPath         = "../transports/wfgan/grpc/time_feature_0-100x0-1000_o2o.ipt"  //relative to wfdef/obfs4proxy
+	o2iRelPath         = "../transports/wfgan/grpc/time_feature_0-100x0-1000_o2i.ipt"
 	o2iEnabled         = false
 	logEnabled         = true
 
