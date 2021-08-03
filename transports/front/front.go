@@ -280,14 +280,14 @@ func (conn *frontConn) ReadFrom(r io.Reader) (written int64, err error) {
 				}
 			default:
 				// here to send out dummy packets
-				if conn.ConnState.LoadCurState() == defconn.StateStop {
+				if conn.ConnState.LoadCurState() == defconn.StateStop || (tsQueue.GetLen() == 0) {
 					time.Sleep(20 * time.Millisecond)
 					continue
 				}
-				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 				timestamp, qErr := tsQueue.DequeueOrWaitForNextElementContext(ctx)
 				if qErr == context.DeadlineExceeded {
-					log.Infof("[Routine] Dequeue timeout after 5 seconds.")
+					log.Infof("[Routine] Dequeue timeout after 1 seconds.")
 					cancel()
 					continue
 				}
@@ -297,7 +297,6 @@ func (conn *frontConn) ReadFrom(r io.Reader) (written int64, err error) {
 					conn.ErrChan <- qErr
 					return
 				}
-				cancel()
 				utils.SleepRho(frontInitTime.Load().(time.Time) ,timestamp.(time.Duration))
 				conn.SendChan <- defconn.PacketInfo{PktType: defconn.PacketTypeDummy, Data: []byte{},  PadLen: defconn.MaxPacketPaddingLength}
 			}
