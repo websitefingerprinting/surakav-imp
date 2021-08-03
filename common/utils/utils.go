@@ -126,12 +126,12 @@ func GetIntArgFromStr(argName string, args *pt.Args) (interface {}, error) {
 	return argValue, nil
 }
 
-func GetFloat32ArgFromStr(argName string, args *pt.Args) (interface {}, error) {
+func GetFloatArgFromStr(argName string, args *pt.Args) (interface {}, error) {
 	argStr, argOK := args.Get(argName)
 	if !argOK {
 		return nil, fmt.Errorf("missing argument '%s'", argName)
 	}
-	argValue, err := strconv.ParseFloat(argStr, 32)
+	argValue, err := strconv.ParseFloat(argStr, 64)
 	if err != nil {
 		return nil, fmt.Errorf("malformed '%s' '%s'", argName, argStr)
 	}

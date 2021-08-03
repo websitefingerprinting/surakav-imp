@@ -126,19 +126,19 @@ func (cf *frontClientFactory) ParseArgs(args *pt.Args) (interface{}, error) {
 		return nil, err
 	}
 
-	wMin, err := utils.GetFloat32ArgFromStr(wMinArg, args)
+	wMin, err := utils.GetFloatArgFromStr(wMinArg, args)
 	if err != nil {
 		return nil, err
 	}
 
-	wMax, err := utils.GetFloat32ArgFromStr(wMaxArg, args)
+	wMax, err := utils.GetFloatArgFromStr(wMaxArg, args)
 	if err != nil {
 		return nil, err
 	}
 
 	return &frontClientArgs{
 		arguments.(*defconn.DefConnClientArgs),
-		wMin.(float32), wMax.(float32),nServer.(int), nClient.(int),
+		float32(wMin.(float64)), float32(wMax.(float64)),nServer.(int), nClient.(int),
 	}, nil
 }
 
