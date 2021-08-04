@@ -79,7 +79,9 @@ func (conn *wfganConn) readPackets() (err error) {
 		case defconn.PacketTypePayload:
 			if payloadLen > 0 {
 				conn.ReceiveDecodedBuffer.Write(payload)
-				conn.NRealSegRcvIncrement()
+				if !conn.IsServer {
+					conn.NRealSegRcvIncrement()
+				}
 			}
 		case defconn.PacketTypePrngSeed:
 			// Only regenerate the distribution if we are the client.

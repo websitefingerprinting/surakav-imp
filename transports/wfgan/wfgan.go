@@ -331,21 +331,21 @@ func (conn *wfganConn) ReadFromClient(r io.Reader) (written int64, err error) {
 				}
 			case <- refillChan:
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				grpcConn, err := grpc.DialContext(ctx, gRPCAddr, grpc.WithInsecure(), grpc.WithBlock())
+				grpcConn, gErr := grpc.DialContext(ctx, gRPCAddr, grpc.WithInsecure(), grpc.WithBlock())
 				cancel()
-				if err != nil {
+				if gErr != nil {
 					log.Errorf("[gRPC] Cannot connect to py server. Exit the program.")
-					conn.ErrChan <- err
+					conn.ErrChan <- gErr
 					return
 				}
 				client := pb.NewGenerateTraceClient(grpcConn)
 				//log.Debugf("[gRPC] Succeed to connect to py server.")
 				req := &pb.GANRequest{Ask: 1}
-				resp, err := client.Query(context.Background(), req)
-				if err!= nil{
+				resp, rErr := client.Query(context.Background(), req)
+				if rErr!= nil{
 					log.Errorf("[gRPC] Error in request %v",err)
 				}
-				_  = conn.Close()
+				_  = grpcConn.Close()
 				log.Debugf("[gRPC] Before: Refill queue (size %v) with %v elements at %v", burstQueue.GetLen(), len(resp.Packets)/2, time.Now().Format("15:04:05.000000"))
 				for i := 0; i < len(resp.Packets) - 1; i += 2 {
 					qerr := burstQueue.Enqueue(rrTuple{request: resp.Packets[i], response: resp.Packets[i+1]})
@@ -451,12 +451,11 @@ func (conn *wfganConn) ReadFromClient(r io.Reader) (written int64, err error) {
 				//defense on, client: sample an ipt and send out a burst
 				ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 				burstTuple, qerr := burstQueue.DequeueOrWaitForNextElementContext(ctx)
+				cancel()
 				if qerr != nil {
 					log.Infof("The queue is empty for 1 second, something wrong happened? Try again.")
-					cancel()
 					break
 				}
-				cancel()
 				log.Debugf("[Event] Sample a burst tuple: %v", burstTuple)
 				requestSize := burstTuple.(rrTuple).request
 				responseSize := burstTuple.(rrTuple).response
