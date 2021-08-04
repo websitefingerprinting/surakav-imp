@@ -188,10 +188,10 @@ func (conn *wfganConn) readPackets() (err error) {
 				panic(fmt.Sprintf("Client receive SignalStart pkt from server? "))
 			}
 			if atomic.LoadUint32(&conn.state) != stateStart {
-				conn.randomP = utils.Beta(float64(conn.p))
+				conn.p = utils.UniformFloat(0.0, 1.0)
 				log.Debugf("[State] Client signal: %s -> %s.", stateMap[atomic.LoadUint32(&conn.state)], stateMap[stateStart])
 				atomic.StoreUint32(&conn.state, stateStart)
-				log.Debugf("[State] Random P is %.2f", conn.randomP)
+				log.Debugf("[State] Random P is %.2f", conn.p)
 			}
 		case packetTypeSignalStop:
 			// a signal from client to make server change to stateStop

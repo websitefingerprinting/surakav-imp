@@ -68,7 +68,6 @@ const (
 	seedArg       = "drbg-seed"
 	certArg       = "cert"
 	tolArg        = "tol"
-	pArg          = "p"
 
 
 	seedLength             = drbg.SeedLength
@@ -95,7 +94,6 @@ type wfganClientArgs struct {
 	publicKey  *ntor.PublicKey
 	sessionKey *ntor.Keypair
 	tol        float32
-	p          float32
 }
 
 // Transport is the wfgan implementation of the base.Transport interface.
@@ -124,7 +122,6 @@ func (t *Transport) ServerFactory(stateDir string, args *pt.Args) (base.ServerFa
 	ptArgs := pt.Args{}
 	ptArgs.Add(certArg, st.cert.String())
 	ptArgs.Add(tolArg, strconv.FormatFloat(float64(st.tol), 'f', -1, 32))
-	ptArgs.Add(pArg, strconv.FormatFloat(float64(st.p), 'f', -1, 32))
 
 	// Initialize the replay filter.
 	filter, err := replayfilter.New(replayTTL)
@@ -149,7 +146,7 @@ func (t *Transport) ServerFactory(stateDir string, args *pt.Args) (base.ServerFa
 		iptList = []float64{}
 	}
 
-	sf := &wfganServerFactory{t, &ptArgs, st.nodeID, st.identityKey, st.drbgSeed, st.tol, st.p, &iptList, filter, rng.Intn(maxCloseDelay)}
+	sf := &wfganServerFactory{t, &ptArgs, st.nodeID, st.identityKey, st.drbgSeed, st.tol, &iptList, filter, rng.Intn(maxCloseDelay)}
 	return sf, nil
 }
 
@@ -206,15 +203,7 @@ func (cf *wfganClientFactory) ParseArgs(args *pt.Args) (interface{}, error) {
 		return nil, fmt.Errorf("malformed w-min '%s'", tolStr)
 	}
 
-	pStr, pOk := args.Get(pArg)
-	if !pOk {
-		return nil, fmt.Errorf("missing argument '%s'", pArg)
-	}
 
-	p, err := strconv.ParseFloat(pStr, 32)
-	if err != nil {
-		return nil, fmt.Errorf("malformed w-min '%s'", pStr)
-	}
 	// Generate the session key pair before connectiong to hide the Elligator2
 	// rejection sampling from network observers.
 	sessionKey, err := ntor.NewKeypair(true)
@@ -222,7 +211,7 @@ func (cf *wfganClientFactory) ParseArgs(args *pt.Args) (interface{}, error) {
 		return nil, err
 	}
 
-	return &wfganClientArgs{nodeID, publicKey, sessionKey, float32(tol), float32(p)}, nil
+	return &wfganClientArgs{nodeID, publicKey, sessionKey, float32(tol)}, nil
 }
 
 func (cf *wfganClientFactory) Dial(network, addr string, dialFn base.DialFunc, args interface{}) (net.Conn, error) {
@@ -252,7 +241,6 @@ type wfganServerFactory struct {
 	lenSeed      *drbg.Seed
 	
 	tol          float32
-	p            float32
 	iptList      *[]float64
 
 	replayFilter *replayfilter.ReplayFilter
@@ -288,7 +276,7 @@ func (sf *wfganServerFactory) WrapConn(conn net.Conn) (net.Conn, error) {
 	iptList := sf.iptList
 
 	// The server's initial state is intentionally set to stateStart at the very beginning to obfuscate the RTT between client and server
-	c := &wfganConn{conn, true, lenDist, sf.tol, sf.p, float64(sf.p), stateStop, 0, 0,canSendChan, bytes.NewBuffer(nil), bytes.NewBuffer(nil), make([]byte, consumeReadSize), iptList, nil, nil}
+	c := &wfganConn{conn, true, lenDist, sf.tol, 0.0, stateStop, 0, 0,canSendChan, bytes.NewBuffer(nil), bytes.NewBuffer(nil), make([]byte, consumeReadSize), iptList, nil, nil}
 	log.Debugf("Server pt con status: isServer: %v, tol: %.1f, p: %.1f", c.isServer, c.tol, c.p)
 	startTime := time.Now()
 
@@ -309,8 +297,7 @@ type wfganConn struct {
 
 	lenDist   *probdist.WeightedDist
 	tol       float32
-	p         float32    // the hyper param used to generate randomP
-	randomP   float64    // the sampled p for each trace, i.e., the probability of proxy **not** to respond with a fake burst
+	p         float64
 	state     uint32
 	nRealSegSent  uint32 // real packet counter over tWindow second
 	nRealSegRcv   uint32
@@ -347,7 +334,7 @@ func newWfganClientConn(conn net.Conn, args *wfganClientArgs) (c *wfganConn, err
 	iptList := utils.ReadFloatFromFile(path.Join(parPath, o2oRelPath))
 
 	// Allocate the client structure.
-	c = &wfganConn{conn, false, lenDist, args.tol, args.p, float64(args.p), stateStop, 0, 0,nil, bytes.NewBuffer(nil), bytes.NewBuffer(nil), make([]byte, consumeReadSize), &iptList, nil, nil}
+	c = &wfganConn{conn, false, lenDist, args.tol, 0.0, stateStop, 0, 0,nil, bytes.NewBuffer(nil), bytes.NewBuffer(nil), make([]byte, consumeReadSize), &iptList, nil, nil}
 	log.Debugf("Client pt con status: isServer: %v, tol: %.1f, p: %.1f", c.isServer, c.tol, c.p)
 	// Start the handshake timeout.
 	deadline := time.Now().Add(clientHandshakeTimeout)
@@ -629,7 +616,7 @@ func (conn *wfganConn) ReadFromServer(r io.Reader) (written int64, err error) {
 				}
 			} else {
 				//defense on
-				skipRespond := utils.Bernoulli(conn.randomP)
+				skipRespond := utils.Bernoulli(conn.p)
 				if receiveBuf.GetLen() == 0 && skipRespond == 1 {
 					log.Infof("[Event] No data in buffer and get 1, skip this response.")
 					continue

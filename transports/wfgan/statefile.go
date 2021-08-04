@@ -56,7 +56,6 @@ type jsonServerState struct {
 	PublicKey  string         `json:"public-key"`
 	DrbgSeed   string         `json:"drbg-seed"`
 	Tol        float32        `json:"tol"`
-	P          float32        `json:"p"`
 }
 
 type wfganServerCert struct {
@@ -102,12 +101,11 @@ type wfganServerState struct {
 	identityKey *ntor.Keypair
 	drbgSeed    *drbg.Seed
 	tol         float32
-	p         float32
 	cert        *wfganServerCert
 }
 
 func (st *wfganServerState) clientString() string {
-	return fmt.Sprintf("%s=%s %s=%.1f %s=%.1f", certArg, st.cert, tolArg, st.tol, pArg, st.p)
+	return fmt.Sprintf("%s=%s %s=%.1f %s=%.1f", certArg, st.cert, tolArg, st.tol)
 }
 
 func serverStateFromArgs(stateDir string, args *pt.Args) (*wfganServerState, error) {
@@ -117,7 +115,6 @@ func serverStateFromArgs(stateDir string, args *pt.Args) (*wfganServerState, err
 	js.PrivateKey, privKeyOk = args.Get(privateKeyArg)
 	js.DrbgSeed, seedOk = args.Get(seedArg)
 	tolStr, tolOk := args.Get(tolArg)
-	pStr, pOk := args.Get(pArg)
 
 	// Either a private key, node id, and seed are ALL specified, or
 	// they should be loaded from the state file.
@@ -143,15 +140,6 @@ func serverStateFromArgs(stateDir string, args *pt.Args) (*wfganServerState, err
 	} else {
 		return nil, fmt.Errorf("missing argument '%s'", tolArg)
 	}
-	if pOk {
-		p, err := strconv.ParseFloat(pStr, 32)
-		if err != nil {
-			return nil, fmt.Errorf("malformed p '%s'", pStr)
-		}
-		js.P = float32(p)
-	} else {
-		return nil, fmt.Errorf("missing argument '%s'", pArg)
-	}
 	return serverStateFromJSONServerState(stateDir, &js)
 }
 
@@ -171,12 +159,8 @@ func serverStateFromJSONServerState(stateDir string, js *jsonServerState) (*wfga
 	if js.Tol < 0{
 		return nil, fmt.Errorf("invalid tol '%.1f'", js.Tol)
 	}
-	if js.P < 0{
-		return nil, fmt.Errorf("invalid p '%.1f'", js.P)
-	}
 
 	st.tol = js.Tol
-	st.p = js.P
 
 	st.cert = serverCertFromState(st)
 

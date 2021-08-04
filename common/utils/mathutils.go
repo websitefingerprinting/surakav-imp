@@ -50,17 +50,19 @@ func Beta(p float64) float64 {
 	return betaDist.Rand()
 }
 
-func Uniform(min int, max int) int {
+func UniformInt(min int, max int) int {
 	// sample a number between [min, max]
 	r := rand.New(rand.NewSource(time.Now().UnixNano()))
 	return r.Intn(max - min + 1) + min
-	//dist := distuv.Uniform{
-	//	Min: min,
-	//	Max: max,
-	//	Src: expRand.NewSource(uint64(time.Now().UTC().UnixNano())),
-	//}
-	//return int(dist.Rand())
 }
 
+func UniformFloat(min float64, max float64) float64 {
+	dist := distuv.Uniform{
+		Min: min,
+		Max: max,
+		Src: expRand.NewSource(uint64(time.Now().UTC().UnixNano())),
+	}
+	return dist.Rand()
+}
 
 
