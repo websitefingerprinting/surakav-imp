@@ -105,7 +105,7 @@ type wfganServerState struct {
 }
 
 func (st *wfganServerState) clientString() string {
-	return fmt.Sprintf("%s=%s %s=%.1f %s=%.1f", certArg, st.cert, tolArg, st.tol)
+	return fmt.Sprintf("%s=%s %s=%.1f", certArg, st.cert, tolArg, st.tol)
 }
 
 func serverStateFromArgs(stateDir string, args *pt.Args) (*wfganServerState, error) {
