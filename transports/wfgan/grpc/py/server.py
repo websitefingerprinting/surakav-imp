@@ -49,8 +49,12 @@ class GenerateTraceServer(GenerateTraceServicer):
             assert length % 2 == 0
             # print(length)
             # print(synthesized_x[1:1+length].astype(int),'\n', synthesized_x[1+length:].astype(int))
-            synthesized_x = synthesized_x[1:1 + length].astype(int)
-            if not self.is_bytes:
+            if self.is_bytes:
+                synthesized_x = synthesized_x[1:1 + length].astype(int)
+            else:
+                # cell sequence, first round to the closest integer
+                # then convert to byte sequence
+                synthesized_x = np.round(synthesized_x[1:1 + length]).astype(int)
                 synthesized_x *= self.cell_size
             synthesized_x[synthesized_x < self.cell_size] = self.cell_size
         return synthesized_x.tolist()
