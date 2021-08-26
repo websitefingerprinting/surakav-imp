@@ -305,8 +305,6 @@ type wfganConn struct {
 	//use to receive the signal from client how much bytes to send
 	//zero means defense off, positive numbers means defense on and the bytes required
 	//used on serverside
-	//wfgan 3.0: client side used as an indicator of incoming real packets.
-	//Client side receive real incoming packets will immediately send a new request
 	canSendChan          chan uint32
 
 	receiveBuffer        *bytes.Buffer
@@ -335,10 +333,8 @@ func newWfganClientConn(conn net.Conn, args *wfganClientArgs) (c *wfganConn, err
 	parPath, _ := path.Split(os.Args[0])
 	iptList := utils.ReadFloatFromFile(path.Join(parPath, o2oRelPath))
 
-	canSendChan := make(chan uint32, 100)  // just to make sure that this channel wont be blocked
-
 	// Allocate the client structure.
-	c = &wfganConn{conn, false, lenDist, args.tol, 0.0, stateStop, 0, 0,canSendChan, bytes.NewBuffer(nil), bytes.NewBuffer(nil), make([]byte, consumeReadSize), &iptList, nil, nil}
+	c = &wfganConn{conn, false, lenDist, args.tol, 0.0, stateStop, 0, 0,nil, bytes.NewBuffer(nil), bytes.NewBuffer(nil), make([]byte, consumeReadSize), &iptList, nil, nil}
 	log.Debugf("Client pt con status: isServer: %v, tol: %.1f, p: %.1f", c.isServer, c.tol, c.p)
 	// Start the handshake timeout.
 	deadline := time.Now().Add(clientHandshakeTimeout)
@@ -492,10 +488,6 @@ func (conn *wfganConn) Read(b []byte) (n int, err error) {
 	// Even if err is set, attempt to do the read anyway so that all decoded
 	// data gets relayed before the connection is torn down.
 	if conn.receiveDecodedBuffer.Len() > 0 {
-		if !conn.isServer && conn.state == stateStart {
-			//defense on, is client
-			conn.canSendChan <- 0
-		}
 		var berr error
 		n, berr = conn.receiveDecodedBuffer.Read(b)
 		if err == nil {
@@ -841,19 +833,8 @@ func (conn *wfganConn) ReadFromClient(r io.Reader) (written int64, err error) {
 
 				ipt := conn.sampleIPT()
 				log.Debugf("[Event] Should sleep %v at %v", ipt, time.Now().Format("15:04:05.000000"))
-
-				// sleep for at most ipt time until:
-				// there is real data received from the other side
-				tmpTimer := time.NewTimer(ipt)
-				select {
-				case <- tmpTimer.C:
-					log.Debugf("[Event] IPT: Client sleep for sampled ipt %v", ipt)
-				case <- conn.canSendChan:
-					log.Debugf("[Event] IPT: Server side real packet received, skip waiting for %v", ipt)
-				}
-				tmpTimer.Stop()
-
-				log.Debugf("[Event] IPT: Finish sleep at %v", time.Now().Format("15:04:05.000000"))
+				utils.SleepRho(time.Now(), ipt)
+				//log.Debugf("[Event] Finish sleep at %v", time.Now().Format("15:04:05.000000"))
 
 			} else {
 				//defense off (in stop or ready)
