@@ -102,6 +102,10 @@ if __name__ == '__main__':
     model = Generator(seq_len, class_dim, latent_dim).to(device)
     model.load_state_dict(torch.load(model_path, map_location=device))
 
+    # # just for debugging
+    # tmp_server = GenerateTraceServer(model, scaler, class_dim, is_bytes, cell_size)
+    # tmp_server.sample()
+
     # open up grpc service
     server = grpc.server(ThreadPoolExecutor())
     add_GenerateTraceServicer_to_server(GenerateTraceServer(model,
