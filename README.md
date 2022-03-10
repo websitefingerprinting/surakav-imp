@@ -217,6 +217,17 @@ the same dependency versions, while `go get -d` always downloads master.
   be accepted if they are not overly intrusive and well written.
 * See `go.mod`, `go.sum` and `go list -m -u all` for build time dependencies.
 
+## Notes for Surakav 2.0
+There is another branch `surakav-2.0` in this repository.
+It extracts a uniform parent transport for all the defenses to reduce the workload of developing a new defense.
+It is recommended to use Surakav 2.0 if you want to really understand the code and to implement your own defense.
+Check the existing ones for your reference.
+
+However, if you only want to try existing ones, it is high recommended to just use Surakav 1.0.
+Surakav 2.0 is still under development and may contain bugs.
+
+
+
 ## References
 [1] [Gong, Jiajun, and Tao Wang. "Zero-delay Lightweight Defenses against Website Fingerprinting." 29th USENIX Security Symposium. 2020.](https://www.usenix.org/system/files/sec20-gong.pdf)
 
@@ -234,8 +245,9 @@ Codes may have bugs.
 We do not guarantee it secure against any attacker in the real world. 
 Please be cautious if you want to use it in the real Tor network.
 
-[comment]: <> (## Thanks)
+## Thanks
 
-[comment]: <> ( * Yawning Angel for explaining the code of obfs4proxy)
+* Yawning Angel for explaining the code of obfs4proxy
 
-[comment]: <> ( * Wuqi Zhang for providing the technical support for extending the framework.)
+* Wuqi Zhang for providing the technical support for extending the framework.
+
