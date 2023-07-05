@@ -8,14 +8,13 @@ require (
 	github.com/mikioh/tcp v0.0.0-20190314235350-803a9b46060c
 	github.com/mikioh/tcpinfo v0.0.0-20190314235526-30a79bb1804b
 	github.com/mikioh/tcpopt v0.0.0-20190314235656-172688c1accc // indirect
-	github.com/stretchr/testify v1.7.0 // indirect
 	gitlab.com/yawning/utls.git v0.0.11-1
 	golang.org/x/crypto v0.1.0
-	golang.org/x/exp v0.0.0-20190125153040-c74c464bbbf2
+	golang.org/x/exp v0.0.0-20200224162631-6cc2880d07d6
 	golang.org/x/net v0.7.0
 	gonum.org/v1/gonum v0.8.2
-	google.golang.org/grpc v1.33.2
-	google.golang.org/protobuf v1.27.1
+	google.golang.org/grpc v1.53.0
+	google.golang.org/protobuf v1.28.1
 )
 
 go 1.15
