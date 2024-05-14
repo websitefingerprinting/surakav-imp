@@ -13,7 +13,7 @@ It makes use of the cryptographic system of obfs4 to do the handshake as well as
 
 
 ## ⚠️ Important Notice
-I have removed my Surakav simulation code from this repository as it was written during my preliminary trial.
+I have removed my Surakav simulation code from `wfd-gan` repository as it was written during my preliminary trial.
 The simulation of Surakav is **rather inaccurate** and will lead to misleading results.
 It is not recommended to use the simulation code to draw any conclusion.
 
