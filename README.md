@@ -11,6 +11,13 @@ It extends obfs4proxy [4], the state-of-the-art pluggable transport for Tor to c
 It transforms the traffic between the client and the bridge according to a defense's protocol.
 It makes use of the cryptographic system of obfs4 to do the handshake as well as to encrypt/decrypt the packets.
 
+
+## ⚠️ Important Notice
+I have removed my Surakav simulation code from this repository as it was written during my preliminary trial.
+The simulation of Surakav is **rather inaccurate** and will lead to misleading results.
+It is not recommended to use the simulation code to draw any conclusion.
+
+
 [comment]: <> (The workflow of WFDefProxy is shown in the figure below:)
 
 [comment]: <> (<div  align="center"> )
